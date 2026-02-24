@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AI Forecast | AI Inventory System</title>
+  <link rel="stylesheet" href="/assets/style.css" />
+</head>
+<body>
+  <div id="app-nav"></div>
+  <main class="container layout">
+    <section class="hero">
+      <h2>AI Forecast Console</h2>
+      <p>Moving-average forecast and reorder recommendations.</p>
+    </section>
+
+    <section class="card">
+      <h3 class="card-title">Product Forecast</h3>
+      <div class="row">
+        <div><label>Product ID</label><input id="productId" type="number" min="1" value="1" /></div>
+        <div><label>Days</label><input id="days" type="number" min="1" value="30" /></div>
+        <div><label>Lead Time</label><input id="lead" type="number" min="1" value="7" /></div>
+        <div><label>Action</label><button id="forecastBtn" type="button">Run Forecast</button></div>
+      </div>
+      <div id="forecastMsg"></div>
+      <div id="forecastCard" class="grid grid-4 mt-12"></div>
+    </section>
+
+    <section class="card">
+      <h3 class="card-title">Reorder Recommendations</h3>
+      <button id="reorderBtn" type="button">Load Recommendations</button>
+      <div id="reorderMsg"></div>
+      <div class="table-wrap mt-12">
+        <table>
+          <thead><tr><th>Product</th><th>Avg/Day</th><th>Lead</th><th>Reorder</th><th>Stock</th><th>Suggest Qty</th></tr></thead>
+          <tbody id="reorderBody"></tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+
+  <script src="/assets/app.js"></script>
+  <script src="/assets/pages/ai.js"></script>
+</body>
+</html>

@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Sales | AI Inventory System</title>
+  <link rel="stylesheet" href="/assets/style.css" />
+</head>
+<body>
+  <div id="app-nav"></div>
+
+  <main class="container layout">
+    <section class="hero">
+      <h2>Sales Console</h2>
+      <p>Create sales using barcode input or camera scan and track payment status instantly.</p>
+    </section>
+
+    <section class="card">
+      <h3 class="card-title">Create Sale</h3>
+      <form id="saleForm" class="grid">
+        <div class="row">
+          <div>
+            <label>Barcode</label>
+            <div class="inline-input-action">
+              <input id="barcode" required />
+              <button id="scanSaleBtn" type="button" class="secondary btn-inline">Scan</button>
+              <button id="findSaleProductBtn" type="button" class="btn-inline">Find</button>
+            </div>
+          </div>
+          <div><label>Quantity</label><input id="qty" type="number" min="1" value="1" required /></div>
+        </div>
+        <div id="saleProductPreview" class="stock-product-preview hidden"></div>
+        <div class="row">
+          <div><label>Payment Method</label>
+            <select id="pay_method">
+              <option value="CASH">CASH</option>
+              <option value="BANK_TRANSFER">BANK_TRANSFER</option>
+              <option value="CARD">CARD</option>
+              <option value="E_WALLET">E_WALLET</option>
+              <option value="OTHER">OTHER</option>
+            </select>
+          </div>
+          <div><label>Paid Amount</label><input id="paid_amount" type="number" step="0.01" min="0" required /></div>
+        </div>
+        <button type="submit">Create Sale</button>
+      </form>
+      <div id="saleMsg"></div>
+    </section>
+
+    <section class="card">
+      <h3 class="card-title">Recent Sales</h3>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>ID</th><th>Date</th><th>Total</th><th>Status</th><th>By</th><th>Action</th></tr></thead>
+          <tbody id="salesBody"></tbody>
+        </table>
+      </div>
+      <div id="listMsg"></div>
+    </section>
+  </main>
+
+  <div id="saleDetailModal" class="modal-backdrop hidden">
+    <div class="modal">
+      <div class="modal-head">
+        <h3>Sale Detail</h3>
+        <button id="closeSaleModal" class="secondary btn-inline" type="button">Close</button>
+      </div>
+      <div class="modal-body">
+        <div id="saleDetailContent"></div>
+      </div>
+    </div>
+  </div>
+
+  <div id="saleScannerModal" class="modal-backdrop hidden">
+    <div class="modal scanner-modal">
+      <div class="modal-head">
+        <h3>Scan Sale Barcode</h3>
+        <button id="closeSaleScannerBtn" type="button" class="secondary btn-inline">Close</button>
+      </div>
+      <div class="modal-body">
+        <p id="saleScannerHint" class="mb-14">Point your camera at a barcode to auto-fill the sale barcode field.</p>
+        <video id="saleScannerVideo" class="scanner-video" autoplay playsinline muted></video>
+        <div id="saleScannerMsg"></div>
+      </div>
+    </div>
+  </div>
+
+  <script src="/assets/app.js"></script>
+  <script src="/assets/pages/sales.js"></script>
+</body>
+</html>

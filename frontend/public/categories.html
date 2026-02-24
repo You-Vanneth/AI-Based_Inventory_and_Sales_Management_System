@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Categories | AI Inventory System</title>
+  <link rel="stylesheet" href="/assets/style.css" />
+</head>
+<body>
+  <div id="app-nav"></div>
+
+  <main class="container layout">
+    <section class="hero">
+      <h2>Category Management</h2>
+      <p>Create and maintain product categories for product assignment.</p>
+    </section>
+
+    <section class="card">
+      <h3 class="card-title">Create Category</h3>
+      <form id="categoryForm" class="grid">
+        <div class="row">
+          <div>
+            <label>Category Name</label>
+            <input id="category_name" required />
+          </div>
+          <div>
+            <label>Description</label>
+            <input id="description" />
+          </div>
+        </div>
+        <button id="saveBtn" type="submit">Save Category</button>
+      </form>
+      <div id="formMsg"></div>
+    </section>
+
+    <section class="card">
+      <h3 class="card-title">Category List</h3>
+      <div class="row">
+        <div><label>Search</label><input id="search" placeholder="Search category" /></div>
+        <div><label>Action</label><button id="btnLoad" type="button">Reload</button></div>
+      </div>
+      <div class="table-wrap mt-12">
+        <table>
+          <thead>
+            <tr>
+              <th>ID</th>
+              <th>Name</th>
+              <th>Description</th>
+              <th>Status</th>
+              <th>Action</th>
+            </tr>
+          </thead>
+          <tbody id="categoriesBody"></tbody>
+        </table>
+      </div>
+      <div id="tableMsg"></div>
+    </section>
+  </main>
+
+  <script src="/assets/app.js"></script>
+  <script src="/assets/pages/categories.js"></script>
+</body>
+</html>

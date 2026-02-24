@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Email Settings | AI Inventory System</title>
+  <link rel="stylesheet" href="/assets/style.css" />
+</head>
+<body>
+  <div id="app-nav"></div>
+  <main class="container layout">
+    <section class="hero">
+      <h2>Email Settings</h2>
+      <p>Configure SMTP and alert rules for low stock and expiry notifications.</p>
+    </section>
+
+    <section class="card">
+      <h3 class="card-title">SMTP Configuration</h3>
+      <form id="emailForm" class="grid">
+        <div class="row">
+          <div><label>SMTP Host</label><input id="smtp_host" required /></div>
+          <div><label>SMTP Port</label><input id="smtp_port" type="number" min="1" required /></div>
+        </div>
+        <div class="row">
+          <div><label>SMTP User</label><input id="smtp_user" required /></div>
+          <div><label>SMTP Password</label><input id="smtp_password" type="password" required /></div>
+        </div>
+        <div class="row">
+          <div><label>Sender Name</label><input id="sender_name" required /></div>
+          <div><label>Sender Email</label><input id="sender_email" type="email" required /></div>
+        </div>
+        <div class="row">
+          <div><label>Use TLS (1/0)</label><input id="use_tls" type="number" min="0" max="1" value="1" /></div>
+          <div><label>Expiry Alert Days</label><input id="alert_expiry_days" type="number" min="1" value="7" /></div>
+        </div>
+        <div class="row">
+          <div><label>Low Stock Alert (1/0)</label><input id="alert_low_stock_enabled" type="number" min="0" max="1" value="1" /></div>
+          <div><label>Expiry Alert (1/0)</label><input id="alert_expiry_enabled" type="number" min="0" max="1" value="1" /></div>
+        </div>
+        <button type="submit">Save Settings</button>
+      </form>
+      <div id="msg"></div>
+    </section>
+
+    <section class="card">
+      <h3 class="card-title">Test Email</h3>
+      <div class="row">
+        <div><label>To Email (optional)</label><input id="to_email" type="email" placeholder="leave empty to sender email" /></div>
+        <div><label>Action</label><button id="testBtn" type="button">Send Test Email</button></div>
+      </div>
+      <div id="testMsg"></div>
+    </section>
+  </main>
+
+  <script src="/assets/app.js"></script>
+  <script src="/assets/pages/email-settings.js"></script>
+</body>
+</html>

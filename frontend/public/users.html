@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Users | AI Inventory System</title>
+  <link rel="stylesheet" href="/assets/style.css" />
+</head>
+<body>
+  <div id="app-nav"></div>
+
+  <main class="container layout">
+    <section class="hero">
+      <h2>User & Role Management</h2>
+      <p>Admin can manage users, role permissions, account status, and edit user details from this page.</p>
+    </section>
+
+    <section class="card">
+      <h3 class="card-title">Create User</h3>
+      <form id="userForm" class="grid">
+        <div class="row">
+          <div><label>Full Name</label><input id="full_name" required /></div>
+          <div><label>Email</label><input id="email" type="email" required /></div>
+        </div>
+        <div class="row">
+          <div><label>Password</label><input id="password" type="password" minlength="8" required /></div>
+          <div>
+            <label>Role</label>
+            <select id="role_id" required></select>
+          </div>
+        </div>
+        <button type="submit">Create User</button>
+      </form>
+      <div id="formMsg"></div>
+    </section>
+
+    <section class="card">
+      <h3 class="card-title">User List</h3>
+      <div class="row">
+        <div><label>Search</label><input id="search" placeholder="name or email" /></div>
+        <div><label>Action</label><button id="btnLoad" type="button">Reload</button></div>
+      </div>
+      <div class="table-wrap mt-12">
+        <table>
+          <thead>
+            <tr><th>ID</th><th>Name</th><th>Email</th><th>Role</th><th>Status</th><th>Actions</th></tr>
+          </thead>
+          <tbody id="usersBody"></tbody>
+        </table>
+      </div>
+      <div id="tableMsg"></div>
+    </section>
+
+    <section class="card">
+      <h3 class="card-title">Roles & Permissions</h3>
+      <p>Configure which feature each system role can access (ADMIN / STAFF).</p>
+      <h4 class="mt-16 mb-14">System Roles</h4>
+      <div id="rolesList" class="grid"></div>
+      <div id="rolesMsg"></div>
+    </section>
+  </main>
+
+  <div id="editUserModal" class="modal-backdrop hidden">
+    <div class="modal">
+      <div class="modal-head">
+        <h3>Edit User</h3>
+        <button id="closeEditModal" type="button" class="secondary btn-inline">Close</button>
+      </div>
+      <div class="modal-body">
+        <form id="editUserForm" class="grid">
+          <input id="edit_user_id" type="hidden" />
+          <div class="row">
+            <div><label>Full Name</label><input id="edit_full_name" required /></div>
+            <div><label>Email</label><input id="edit_email" type="email" required /></div>
+          </div>
+          <div class="row">
+            <div><label>Role</label><select id="edit_role_id" required></select></div>
+            <div>
+              <label>Status</label>
+              <select id="edit_is_active">
+                <option value="1">Active</option>
+                <option value="0">Inactive</option>
+              </select>
+            </div>
+          </div>
+          <div>
+            <label>New Password (Optional)</label>
+            <input id="edit_new_password" type="password" minlength="8" placeholder="Leave blank to keep current password" />
+          </div>
+          <button type="submit">Save Changes</button>
+        </form>
+        <div id="editFormMsg"></div>
+      </div>
+    </div>
+  </div>
+
+  <script src="/assets/app.js"></script>
+  <script src="/assets/pages/users.js"></script>
+</body>
+</html>

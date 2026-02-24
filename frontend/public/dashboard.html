@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Dashboard | AI Inventory System</title>
+  <link rel="stylesheet" href="/assets/style.css" />
+</head>
+<body>
+  <div id="app-nav"></div>
+
+  <main class="container layout">
+    <section class="hero">
+      <h2>Operations Dashboard</h2>
+      <p>Real-time visibility for inventory and sales performance.</p>
+    </section>
+
+    <section class="grid grid-4" id="cards"></section>
+
+    <section class="grid grid-2 dashboard-analytics">
+      <article class="card">
+        <div class="card-head">
+          <h3 class="card-title">14-Day Sales Trend</h3>
+          <span class="chip">Revenue</span>
+        </div>
+        <div id="salesTrendChart"></div>
+      </article>
+      <article class="card">
+        <div class="card-head">
+          <h3 class="card-title">Sales by Category</h3>
+          <span class="chip">Top Categories</span>
+        </div>
+        <div id="categoryBars"></div>
+      </article>
+    </section>
+
+    <section class="grid grid-2 dashboard-tables">
+      <article class="card">
+        <div class="card-head">
+          <h3 class="card-title">Top Selling Products</h3>
+          <span class="chip">By Units Sold</span>
+        </div>
+        <div id="topProductsTable"></div>
+      </article>
+      <article class="card">
+        <div class="card-head">
+          <h3 class="card-title">Low Stock Watchlist</h3>
+          <span class="chip warning">Restock</span>
+        </div>
+        <div id="lowStockTable"></div>
+      </article>
+    </section>
+
+    <section class="card">
+      <h3 class="card-title">System Notes</h3>
+      <p>Dashboard data is loaded live from backend APIs.</p>
+      <div id="msg"></div>
+    </section>
+  </main>
+
+  <script src="/assets/app.js"></script>
+  <script src="/assets/pages/dashboard.js"></script>
+</body>
+</html>
