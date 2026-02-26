@@ -11,6 +11,7 @@ const KM = {
   "Categories": "ប្រភេទ",
   "Users": "អ្នកប្រើ",
   "Email Settings": "ការកំណត់អ៊ីមែល",
+  "Menu": "មឺនុយ",
   "Logout": "ចាកចេញ",
   "Sign In": "ចូលប្រើ",
   "Smart Inventory Control": "ការគ្រប់គ្រងស្តុកឆ្លាតវៃ",

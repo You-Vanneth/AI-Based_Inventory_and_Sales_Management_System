@@ -1,5 +1,5 @@
 import React from "react";
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { NavLink, useNavigate } from "react-router-dom";
 import { clearAuth, getUser } from "../lib/api";
 import { getLanguage, setLanguage, t } from "../lib/i18n";
@@ -20,15 +20,17 @@ export default function Layout({ title, children }) {
   const navigate = useNavigate();
   const user = getUser();
   const lang = getLanguage();
+  const [sidebarOpen, setSidebarOpen] = useState(false);
 
   useEffect(() => {
     document.body.classList.add("has-app-nav");
     document.documentElement.setAttribute("lang", lang === "km" ? "km" : "en");
+    document.body.classList.toggle("sidebar-open", sidebarOpen);
     return () => {
       document.body.classList.remove("has-app-nav");
       document.body.classList.remove("sidebar-open");
     };
-  }, [lang]);
+  }, [lang, sidebarOpen]);
 
   const logout = () => {
     clearAuth();
@@ -50,7 +52,12 @@ export default function Layout({ title, children }) {
         </div>
         <div className="sidebar-links">
           {links.map(([to, label]) => (
-            <NavLink key={to} to={to} className={({ isActive }) => (isActive ? "active" : "")}>
+            <NavLink
+              key={to}
+              to={to}
+              className={({ isActive }) => (isActive ? "active" : "")}
+              onClick={() => setSidebarOpen(false)}
+            >
               {t(label)}
             </NavLink>
           ))}
@@ -65,12 +72,23 @@ export default function Layout({ title, children }) {
       </aside>
 
       <header className="app-topbar">
+        <button
+          id="navToggle"
+          className="nav-toggle btn-inline"
+          type="button"
+          aria-label={t("Menu")}
+          onClick={() => setSidebarOpen((prev) => !prev)}
+        >
+          {t("Menu")}
+        </button>
         <div className="topbar-title">{t(title)}</div>
         <div className="lang-switch">
           <button type="button" className={`btn-inline ${lang === "en" ? "active" : ""}`} onClick={() => switchLang("en")}>EN</button>
           <button type="button" className={`btn-inline ${lang === "km" ? "active" : ""}`} onClick={() => switchLang("km")}>ខ្មែរ</button>
         </div>
       </header>
+
+      <div className="app-overlay" onClick={() => setSidebarOpen(false)} />
 
       <main className="container layout">{children}</main>
     </>
