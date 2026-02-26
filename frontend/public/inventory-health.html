@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Inventory Health | AI Inventory System</title>
+  <link rel="stylesheet" href="/assets/style.css" />
+</head>
+<body>
+  <div id="app-nav"></div>
+
+  <main class="container layout">
+    <section class="hero">
+      <h2>Inventory Health Center</h2>
+      <p>Monitor stock risk, expiry urgency, and restock priority in one place.</p>
+    </section>
+
+    <section class="grid grid-4" id="healthCards"></section>
+
+    <section class="card">
+      <div class="card-head">
+        <h3 class="card-title">Expiry Prioritization (FEFO)</h3>
+        <div class="inline-input-action">
+          <label for="expiryWindow" class="sr-only">Days Window</label>
+          <select id="expiryWindow" class="min-select">
+            <option value="7">Next 7 days</option>
+            <option value="14">Next 14 days</option>
+            <option value="30" selected>Next 30 days</option>
+          </select>
+          <button id="refreshHealth" type="button" class="btn-inline">Refresh</button>
+        </div>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr><th>Product</th><th>Barcode</th><th>Qty</th><th>Expiry</th><th>Days Left</th><th>Priority</th></tr>
+          </thead>
+          <tbody id="expiryBody"></tbody>
+        </table>
+      </div>
+      <div id="expiryMsg"></div>
+    </section>
+
+    <section class="card">
+      <div class="card-head">
+        <h3 class="card-title">Low Stock Action Board</h3>
+        <span class="chip warning">Restock Plan</span>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr><th>Product</th><th>Category</th><th>Qty</th><th>Min</th><th>Gap</th><th>Action</th></tr>
+          </thead>
+          <tbody id="lowBody"></tbody>
+        </table>
+      </div>
+      <div id="lowMsg"></div>
+    </section>
+  </main>
+
+  <script src="/assets/app.js"></script>
+  <script src="/assets/pages/inventory-health.js"></script>
+</body>
+</html>

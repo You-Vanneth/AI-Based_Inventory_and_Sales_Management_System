@@ -5,3 +5,5 @@ npm-debug.log*
 .mysql-data/
 .mysql-run/
 backend/backups/
+frontend/dist/
+*.swp

@@ -7,7 +7,7 @@ const thead = document.getElementById("thead");
 const tbody = document.getElementById("tbody");
 
 function renderTable(columns, rows) {
-  thead.innerHTML = `<tr>${columns.map((c) => `<th>${t(c)}</th>`).join("")}</tr>`;
+  thead.innerHTML = `<tr>${columns.map((c) => `<th>${tr(c)}</th>`).join("")}</tr>`;
   tbody.innerHTML = rows.map((r) => `<tr>${r.map((v) => `<td>${v ?? "-"}</td>`).join("")}</tr>`).join("");
 }
 

@@ -1,9 +1,25 @@
-# Frontend Setup (Placeholder)
+# React Frontend (Vite)
 
-Frontend will use HTML/CSS/JavaScript based pages and consume backend API (`/api/v1`).
+This frontend is now migrated to React + React Router.
 
-Planned next:
-- Login page
-- Dashboard page
-- Product list/manage page
-- Sales page
+## Run
+
+```bash
+cd /Users/youvanneth/Desktop/Project/AI-Based_Inventory_and_Sales_Management_System/frontend
+npm install
+npm run dev
+```
+
+Open: http://localhost:5173
+
+## Notes
+
+- API base path is `/api/v1` in `src/lib/api.js`.
+- Main routes:
+  - `/login`
+  - `/dashboard`
+  - `/products`
+  - `/sales`
+  - `/reports`
+  - `/ai`
+  - `/inventory-health`

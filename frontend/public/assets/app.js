@@ -19,6 +19,24 @@ const KM_TEXT_MAP = {
   "Sales": "ការលក់",
   "Reports": "របាយការណ៍",
   "AI Forecast": "ព្យាករណ៍ AI",
+  "Inventory Health": "សុខភាពស្តុក",
+  "Inventory Health Center": "មជ្ឈមណ្ឌលសុខភាពស្តុក",
+  "Monitor stock risk, expiry urgency, and restock priority in one place.": "តាមដានហានិភ័យស្តុក ភាពបន្ទាន់នៃការផុតកំណត់ និងអាទិភាពបញ្ចូលស្តុកនៅកន្លែងតែមួយ។",
+  "Expiry Prioritization (FEFO)": "អាទិភាពផុតកំណត់ (FEFO)",
+  "Days Window": "ចន្លោះថ្ងៃ",
+  "Next 7 days": "7 ថ្ងៃខាងមុខ",
+  "Next 14 days": "14 ថ្ងៃខាងមុខ",
+  "Next 30 days": "30 ថ្ងៃខាងមុខ",
+  "Low Stock Action Board": "ផ្ទាំងសកម្មភាពស្តុកទាប",
+  "Restock Plan": "ផែនការបញ្ចូលស្តុក",
+  "Out of Stock": "អស់ស្តុក",
+  "Critical Expiry": "ផុតកំណត់បន្ទាន់",
+  "No expiring products in this window.": "មិនមានផលិតផលជិតផុតកំណត់ក្នុងចន្លោះនេះទេ។",
+  "Monitor": "តាមដាន",
+  "Critical": "បន្ទាន់ខ្លាំង",
+  "High": "ខ្ពស់",
+  "Medium": "មធ្យម",
+  "Normal": "ធម្មតា",
   "Email Alerts": "អ៊ីមែលជូនដំណឹង",
   "Logout": "ចាកចេញ",
   "Menu": "មឺនុយ",
@@ -425,7 +443,8 @@ function renderNav(active) {
       label: t("Insights"),
       links: [
         { id: "reports", href: "/reports.html", label: t("Reports"), permission: "reports.view" },
-        { id: "ai", href: "/ai.html", label: t("AI Forecast"), permission: "ai.view" }
+        { id: "ai", href: "/ai.html", label: t("AI Forecast"), permission: "ai.view" },
+        { id: "inventory-health", href: "/inventory-health.html", label: t("Inventory Health"), permission: "reports.view" }
       ]
     },
     {
