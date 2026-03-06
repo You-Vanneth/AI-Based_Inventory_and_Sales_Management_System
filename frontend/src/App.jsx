@@ -11,6 +11,7 @@ import InventoryHealthPage from "./pages/InventoryHealthPage";
 import CategoriesPage from "./pages/CategoriesPage";
 import UsersPage from "./pages/UsersPage";
 import EmailSettingsPage from "./pages/EmailSettingsPage";
+import NotificationsPage from "./pages/NotificationsPage";
 
 function PrivateRoute({ children }) {
   const location = useLocation();
@@ -29,6 +30,7 @@ export default function App() {
       <Route path="/reports" element={<PrivateRoute><ReportsPage /></PrivateRoute>} />
       <Route path="/ai" element={<PrivateRoute><AIPage /></PrivateRoute>} />
       <Route path="/inventory-health" element={<PrivateRoute><InventoryHealthPage /></PrivateRoute>} />
+      <Route path="/notifications" element={<PrivateRoute><NotificationsPage /></PrivateRoute>} />
       <Route path="/categories" element={<PrivateRoute><CategoriesPage /></PrivateRoute>} />
       <Route path="/users" element={<PrivateRoute><UsersPage /></PrivateRoute>} />
       <Route path="/email-settings" element={<PrivateRoute><EmailSettingsPage /></PrivateRoute>} />

@@ -31,6 +31,18 @@ export async function apiFetch(path, options = {}) {
 
   const res = await fetch(`${API_BASE}${path}`, { ...options, headers });
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.message || "Request failed");
+  const appCode = Number(data?.code || 0);
+  const isAuthFailure = res.status === 401 || res.status === 403 || appCode === 401 || appCode === 403;
+
+  if (isAuthFailure) {
+    clearAuth();
+    if (typeof window !== "undefined" && window.location.pathname !== "/login") {
+      window.location.href = "/login";
+    }
+  }
+
+  if (!res.ok || appCode >= 400) {
+    throw new Error(data?.message || data?.error || "Request failed");
+  }
   return data;
 }

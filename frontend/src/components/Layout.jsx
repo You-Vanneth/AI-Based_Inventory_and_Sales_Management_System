@@ -11,6 +11,7 @@ const links = [
   ["/reports", "Reports"],
   ["/ai", "AI Forecast"],
   ["/inventory-health", "Inventory Health"],
+  ["/notifications", "Notifications"],
   ["/categories", "Categories"],
   ["/users", "Users"],
   ["/email-settings", "Email Settings"]
@@ -64,8 +65,8 @@ export default function Layout({ title, children }) {
         </div>
         <div className="sidebar-footer">
           <div className="sidebar-user">
-            <div className="sidebar-user-name">{user?.full_name || "User"}</div>
-            <div className="sidebar-user-role">{user?.role || "STAFF"}</div>
+            <div className="sidebar-user-name">{user?.full_name || t("User")}</div>
+            <div className="sidebar-user-role">{user?.role || t("STAFF")}</div>
           </div>
           <button type="button" className="secondary" onClick={logout}>{t("Logout")}</button>
         </div>

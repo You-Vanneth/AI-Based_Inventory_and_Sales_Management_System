@@ -1,0 +1,24 @@
+{
+  "name": "ai-inventory-backend",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node --watch src/server.js",
+    "start": "node src/server.js",
+    "db:schema": "psql \"$DATABASE_URL\" -f db/postgres/schema.sql",
+    "db:seed": "psql \"$DATABASE_URL\" -f db/postgres/seed.sql",
+    "db:reset": "npm run db:schema && npm run db:seed",
+    "db:verify": "psql \"$DATABASE_URL\" -f db/postgres/verify.sql",
+    "db:mysql:schema": "mysql -h \"$MYSQL_HOST\" -P \"$MYSQL_PORT\" -u \"$MYSQL_USER\" ${MYSQL_PASSWORD:+-p$MYSQL_PASSWORD} < db/mysql/schema.sql",
+    "db:mysql:seed": "mysql -h \"$MYSQL_HOST\" -P \"$MYSQL_PORT\" -u \"$MYSQL_USER\" ${MYSQL_PASSWORD:+-p$MYSQL_PASSWORD} < db/mysql/seed.sql",
+    "db:mysql:verify": "mysql -h \"$MYSQL_HOST\" -P \"$MYSQL_PORT\" -u \"$MYSQL_USER\" ${MYSQL_PASSWORD:+-p$MYSQL_PASSWORD} < db/mysql/verify.sql"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.21.2",
+    "mysql2": "^3.14.5",
+    "morgan": "^1.10.0"
+  }
+}

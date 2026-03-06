@@ -1,4 +1,5 @@
 import React from "react";
+import { t } from "../lib/i18n";
 
 export default function Modal({ open, title, onClose, children, size = "normal" }) {
   if (!open) return null;
@@ -7,7 +8,7 @@ export default function Modal({ open, title, onClose, children, size = "normal" 
       <div className={`modal ${size === "wide" ? "modal-wide" : ""}`} onClick={(e) => e.stopPropagation()}>
         <div className="modal-head">
           <h3>{title}</h3>
-          <button type="button" className="secondary btn-inline" onClick={onClose}>Close</button>
+          <button type="button" className="secondary btn-inline" onClick={onClose}>{t("Close")}</button>
         </div>
         <div className="modal-body">{children}</div>
       </div>

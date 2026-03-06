@@ -3,7 +3,28 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <title>AI Inventory Frontend</title>
+    <script>
+      (function () {
+        function isIgnoredExtensionRejection(reason) {
+          const stack = String((reason && reason.originalError && reason.originalError.stack) || "");
+          const message = String((reason && reason.message) || "");
+          const pathPrefix = String((reason && reason.reqInfo && reason.reqInfo.pathPrefix) || "");
+          return (
+            stack.includes("chrome-extension://") &&
+            pathPrefix === "/site_integration" &&
+            (message.toLowerCase().includes("permission error") || Number((reason && reason.code) || 0) === 403)
+          );
+        }
+
+        window.addEventListener("unhandledrejection", function (event) {
+          if (isIgnoredExtensionRejection(event.reason)) {
+            event.preventDefault();
+          }
+        });
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>
