@@ -2,7 +2,20 @@ import "dotenv/config";
 import express from "express";
 import cors from "cors";
 import morgan from "morgan";
-import mysql from "mysql2/promise";
+import { dbQuery, getMysqlPool, isMysqlEnabled } from "./config/db.js";
+import { createAuthController } from "./controllers/auth.controller.js";
+import { createAuthRequired } from "./middlewares/auth.middleware.js";
+import { createAuthRouter } from "./routes/auth.routes.js";
+import {
+  buildPdfDocument,
+  buildXlsxDocument,
+  clamp,
+  csvEscape,
+  daysUntil,
+  nowIso,
+  startOfDay,
+  toNumber
+} from "./utils/helpers.js";
 
 const app = express();
 const PORT = Number(process.env.PORT || 5001);
@@ -12,355 +25,8 @@ app.use(cors());
 app.use(express.json({ limit: "2mb" }));
 app.use(morgan("dev"));
 
-let MYSQL_ENABLED = Boolean(process.env.MYSQL_HOST && process.env.MYSQL_DATABASE && process.env.MYSQL_USER);
-let mysqlPool = null;
-
-function getMysqlPool() {
-  if (!MYSQL_ENABLED) return null;
-  if (!mysqlPool) {
-    mysqlPool = mysql.createPool({
-      host: process.env.MYSQL_HOST || "127.0.0.1",
-      port: Number(process.env.MYSQL_PORT || 3306),
-      user: process.env.MYSQL_USER || "root",
-      password: process.env.MYSQL_PASSWORD || "",
-      database: process.env.MYSQL_DATABASE || "ai_inventory",
-      socketPath: process.env.MYSQL_SOCKET || undefined,
-      waitForConnections: true,
-      connectionLimit: 10
-    });
-  }
-  return mysqlPool;
-}
-
-async function dbQuery(sql, params = []) {
-  const pool = getMysqlPool();
-  if (!pool) throw new Error("MySQL is not configured");
-  try {
-    const [rows] = await pool.query(sql, params);
-    return rows;
-  } catch (err) {
-    MYSQL_ENABLED = false;
-    // eslint-disable-next-line no-console
-    console.error("MySQL unavailable, switching to in-memory fallback:", err.message);
-    const firstWord = String(sql || "").trim().split(/\s+/)[0]?.toUpperCase();
-    if (firstWord === "SELECT" || firstWord === "SHOW" || firstWord === "DESCRIBE" || firstWord === "DESC") {
-      return [];
-    }
-    return { insertId: 0, affectedRows: 0 };
-  }
-}
-
 function asBool(value) {
   return Number(value || 0) === 1 || value === true;
-}
-
-// ===== helpers =====
-function nowIso() {
-  return new Date().toISOString();
-}
-
-function toNumber(value, fallback = 0) {
-  const n = Number(value);
-  return Number.isFinite(n) ? n : fallback;
-}
-
-function parseDate(value) {
-  const d = new Date(value);
-  return Number.isNaN(d.getTime()) ? null : d;
-}
-
-function daysUntil(dateText) {
-  const target = parseDate(dateText);
-  if (!target) return null;
-  const today = new Date();
-  const start = new Date(today.getFullYear(), today.getMonth(), today.getDate());
-  const end = new Date(target.getFullYear(), target.getMonth(), target.getDate());
-  return Math.ceil((end.getTime() - start.getTime()) / (1000 * 60 * 60 * 24));
-}
-
-function startOfDay(date = new Date()) {
-  return new Date(date.getFullYear(), date.getMonth(), date.getDate());
-}
-
-function clamp(n, min, max) {
-  return Math.min(max, Math.max(min, n));
-}
-
-function csvEscape(value) {
-  const text = String(value ?? "");
-  if (text.includes(",") || text.includes('"') || text.includes("\n")) {
-    return `"${text.replace(/"/g, '""')}"`;
-  }
-  return text;
-}
-
-function pdfEscape(value) {
-  return String(value ?? "")
-    .replace(/[^\x20-\x7E]/g, "?")
-    .replace(/\\/g, "\\\\")
-    .replace(/\(/g, "\\(")
-    .replace(/\)/g, "\\)");
-}
-
-function wrapPlainText(text, maxLength = 92) {
-  const value = String(text ?? "");
-  if (!value) return [""];
-  const lines = [];
-  let rest = value;
-  while (rest.length > maxLength) {
-    let cut = rest.lastIndexOf(" ", maxLength);
-    if (cut < Math.floor(maxLength * 0.6)) cut = maxLength;
-    lines.push(rest.slice(0, cut).trimEnd());
-    rest = rest.slice(cut).trimStart();
-  }
-  if (rest) lines.push(rest);
-  return lines;
-}
-
-function buildPdfDocument({ title, subtitle, lines }) {
-  const allLines = [title, subtitle, "", ...lines.flatMap((line) => wrapPlainText(line, 92))];
-  const linesPerPage = 45;
-  const chunks = [];
-  for (let i = 0; i < allLines.length; i += linesPerPage) {
-    chunks.push(allLines.slice(i, i + linesPerPage));
-  }
-  if (!chunks.length) chunks.push(["No data"]);
-
-  const pageIds = [];
-  const contentIds = [];
-  let nextId = 3;
-  chunks.forEach(() => {
-    pageIds.push(nextId++);
-    contentIds.push(nextId++);
-  });
-  const fontId = nextId++;
-  const objects = new Map();
-
-  objects.set(1, "<< /Type /Catalog /Pages 2 0 R >>");
-  objects.set(2, `<< /Type /Pages /Kids [${pageIds.map((id) => `${id} 0 R`).join(" ")}] /Count ${pageIds.length} >>`);
-
-  chunks.forEach((chunk, index) => {
-    const pageId = pageIds[index];
-    const contentId = contentIds[index];
-    const contentLines = ["BT", "/F1 12 Tf", "50 792 Td"];
-    chunk.forEach((line, lineIndex) => {
-      if (lineIndex > 0) contentLines.push("0 -16 Td");
-      contentLines.push(`(${pdfEscape(line)}) Tj`);
-    });
-    contentLines.push("ET");
-    const stream = contentLines.join("\n");
-    objects.set(
-      pageId,
-      `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Contents ${contentId} 0 R /Resources << /Font << /F1 ${fontId} 0 R >> >> >>`
-    );
-    objects.set(contentId, `<< /Length ${Buffer.byteLength(stream, "utf8")} >>\nstream\n${stream}\nendstream`);
-  });
-
-  objects.set(fontId, "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>");
-
-  let pdf = "%PDF-1.4\n";
-  const offsets = [0];
-  for (let id = 1; id <= fontId; id += 1) {
-    offsets[id] = Buffer.byteLength(pdf, "utf8");
-    pdf += `${id} 0 obj\n${objects.get(id)}\nendobj\n`;
-  }
-  const xrefOffset = Buffer.byteLength(pdf, "utf8");
-  pdf += `xref\n0 ${fontId + 1}\n0000000000 65535 f \n`;
-  for (let id = 1; id <= fontId; id += 1) {
-    pdf += `${String(offsets[id]).padStart(10, "0")} 00000 n \n`;
-  }
-  pdf += `trailer\n<< /Size ${fontId + 1} /Root 1 0 R >>\nstartxref\n${xrefOffset}\n%%EOF`;
-  return Buffer.from(pdf, "utf8");
-}
-
-function xmlEscape(value) {
-  return String(value ?? "")
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&apos;");
-}
-
-function columnNameFromIndex(index) {
-  let value = index + 1;
-  let out = "";
-  while (value > 0) {
-    const rem = (value - 1) % 26;
-    out = String.fromCharCode(65 + rem) + out;
-    value = Math.floor((value - 1) / 26);
-  }
-  return out;
-}
-
-function buildCrc32Table() {
-  const table = new Uint32Array(256);
-  for (let i = 0; i < 256; i += 1) {
-    let c = i;
-    for (let j = 0; j < 8; j += 1) {
-      c = (c & 1) ? (0xedb88320 ^ (c >>> 1)) : (c >>> 1);
-    }
-    table[i] = c >>> 0;
-  }
-  return table;
-}
-
-const CRC32_TABLE = buildCrc32Table();
-
-function crc32(buffer) {
-  let crc = 0xffffffff;
-  for (const byte of buffer) {
-    crc = CRC32_TABLE[(crc ^ byte) & 0xff] ^ (crc >>> 8);
-  }
-  return (crc ^ 0xffffffff) >>> 0;
-}
-
-function toDosDateTime(date = new Date()) {
-  const year = Math.max(1980, date.getFullYear()) - 1980;
-  const month = date.getMonth() + 1;
-  const day = date.getDate();
-  const hours = date.getHours();
-  const minutes = date.getMinutes();
-  const seconds = Math.floor(date.getSeconds() / 2);
-  return {
-    date: (year << 9) | (month << 5) | day,
-    time: (hours << 11) | (minutes << 5) | seconds
-  };
-}
-
-function createZip(entries) {
-  const localParts = [];
-  const centralParts = [];
-  let offset = 0;
-  const stamp = toDosDateTime(new Date());
-
-  entries.forEach((entry) => {
-    const nameBuffer = Buffer.from(entry.name, "utf8");
-    const dataBuffer = Buffer.isBuffer(entry.data) ? entry.data : Buffer.from(entry.data, "utf8");
-    const crc = crc32(dataBuffer);
-
-    const localHeader = Buffer.alloc(30 + nameBuffer.length);
-    localHeader.writeUInt32LE(0x04034b50, 0);
-    localHeader.writeUInt16LE(20, 4);
-    localHeader.writeUInt16LE(0, 6);
-    localHeader.writeUInt16LE(0, 8);
-    localHeader.writeUInt16LE(stamp.time, 10);
-    localHeader.writeUInt16LE(stamp.date, 12);
-    localHeader.writeUInt32LE(crc, 14);
-    localHeader.writeUInt32LE(dataBuffer.length, 18);
-    localHeader.writeUInt32LE(dataBuffer.length, 22);
-    localHeader.writeUInt16LE(nameBuffer.length, 26);
-    localHeader.writeUInt16LE(0, 28);
-    nameBuffer.copy(localHeader, 30);
-    localParts.push(localHeader, dataBuffer);
-
-    const centralHeader = Buffer.alloc(46 + nameBuffer.length);
-    centralHeader.writeUInt32LE(0x02014b50, 0);
-    centralHeader.writeUInt16LE(20, 4);
-    centralHeader.writeUInt16LE(20, 6);
-    centralHeader.writeUInt16LE(0, 8);
-    centralHeader.writeUInt16LE(0, 10);
-    centralHeader.writeUInt16LE(stamp.time, 12);
-    centralHeader.writeUInt16LE(stamp.date, 14);
-    centralHeader.writeUInt32LE(crc, 16);
-    centralHeader.writeUInt32LE(dataBuffer.length, 20);
-    centralHeader.writeUInt32LE(dataBuffer.length, 24);
-    centralHeader.writeUInt16LE(nameBuffer.length, 28);
-    centralHeader.writeUInt16LE(0, 30);
-    centralHeader.writeUInt16LE(0, 32);
-    centralHeader.writeUInt16LE(0, 34);
-    centralHeader.writeUInt16LE(0, 36);
-    centralHeader.writeUInt32LE(0, 38);
-    centralHeader.writeUInt32LE(offset, 42);
-    nameBuffer.copy(centralHeader, 46);
-    centralParts.push(centralHeader);
-
-    offset += localHeader.length + dataBuffer.length;
-  });
-
-  const centralSize = centralParts.reduce((sum, part) => sum + part.length, 0);
-  const end = Buffer.alloc(22);
-  end.writeUInt32LE(0x06054b50, 0);
-  end.writeUInt16LE(0, 4);
-  end.writeUInt16LE(0, 6);
-  end.writeUInt16LE(entries.length, 8);
-  end.writeUInt16LE(entries.length, 10);
-  end.writeUInt32LE(centralSize, 12);
-  end.writeUInt32LE(offset, 16);
-  end.writeUInt16LE(0, 20);
-
-  return Buffer.concat([...localParts, ...centralParts, end]);
-}
-
-function buildXlsxDocument(type, rows) {
-  const keys = rows[0] ? Object.keys(rows[0]) : ["Result"];
-  const bodyRows = rows.length ? rows : [{ Result: "No data" }];
-  const xmlRows = [
-    `<row r="1">${keys.map((key, index) => `<c r="${columnNameFromIndex(index)}1" t="inlineStr"><is><t>${xmlEscape(key)}</t></is></c>`).join("")}</row>`
-  ];
-
-  bodyRows.forEach((row, rowIndex) => {
-    const excelRow = rowIndex + 2;
-    const cells = keys.map((key, colIndex) => {
-      const cellRef = `${columnNameFromIndex(colIndex)}${excelRow}`;
-      const value = row[key];
-      if (typeof value === "number" && Number.isFinite(value)) {
-        return `<c r="${cellRef}"><v>${value}</v></c>`;
-      }
-      const numeric = Number(value);
-      if (value !== null && value !== "" && value !== undefined && Number.isFinite(numeric) && String(value).trim() !== "") {
-        return `<c r="${cellRef}"><v>${numeric}</v></c>`;
-      }
-      return `<c r="${cellRef}" t="inlineStr"><is><t>${xmlEscape(value ?? "-")}</t></is></c>`;
-    }).join("");
-    xmlRows.push(`<row r="${excelRow}">${cells}</row>`);
-  });
-
-  const worksheet = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
-  <sheetData>${xmlRows.join("")}</sheetData>
-</worksheet>`;
-  const workbook = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
-  <sheets>
-    <sheet name="${xmlEscape(type)}" sheetId="1" r:id="rId1"/>
-  </sheets>
-</workbook>`;
-  const workbookRels = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
-  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>
-  <Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>
-</Relationships>`;
-  const rootRels = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
-  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>
-</Relationships>`;
-  const contentTypes = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
-  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
-  <Default Extension="xml" ContentType="application/xml"/>
-  <Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
-  <Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
-  <Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>
-</Types>`;
-  const styles = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
-  <fonts count="1"><font><sz val="11"/><name val="Calibri"/><family val="2"/></font></fonts>
-  <fills count="2"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill></fills>
-  <borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders>
-  <cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>
-  <cellXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/></cellXfs>
-  <cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles>
-</styleSheet>`;
-
-  return createZip([
-    { name: "[Content_Types].xml", data: contentTypes },
-    { name: "_rels/.rels", data: rootRels },
-    { name: "xl/workbook.xml", data: workbook },
-    { name: "xl/_rels/workbook.xml.rels", data: workbookRels },
-    { name: "xl/worksheets/sheet1.xml", data: worksheet },
-    { name: "xl/styles.xml", data: styles }
-  ]);
 }
 
 function getBackendBaseUrl(req) {
@@ -377,13 +43,13 @@ async function getBackendStatusSummary(req) {
     environment: process.env.NODE_ENV || "development",
     time: nowIso(),
     mysql: {
-      enabled: MYSQL_ENABLED,
+      enabled: isMysqlEnabled(),
       connected: false,
       label: "Not configured"
     }
   };
 
-  if (!MYSQL_ENABLED) return summary;
+  if (!isMysqlEnabled()) return summary;
 
   try {
     const pool = getMysqlPool();
@@ -843,54 +509,16 @@ const aiForecastVersions = [
 ];
 
 const aiForecastHistory = [];
+const authRequired = createAuthRequired({ authTokens, users });
+const authController = createAuthController({
+  authTokens,
+  users,
+  sessions,
+  appendUserActivity,
+  nextSessionId: () => sessionIdSeq++
+});
 
-// ===== auth =====
-async function authRequired(req, res, next) {
-  const authHeader = req.header("authorization") || "";
-  if (!authHeader.startsWith("Bearer ")) {
-    return res.status(401).json({ message: "Unauthorized" });
-  }
-  const token = authHeader.replace("Bearer ", "").trim();
-  const userId = authTokens.get(token);
-  if (userId) {
-    req.user = users.find((u) => u.id === userId) || null;
-    if (req.user) return next();
-  }
-
-  if (MYSQL_ENABLED) {
-    try {
-      const rows = await dbQuery(
-        `SELECT u.id, u.username, u.email, u.full_name, u.locked, r.code AS role_name
-         FROM auth_tokens t
-         JOIN users u ON u.id = t.user_id
-         JOIN roles r ON r.id = u.role_id
-         WHERE t.token_hash = ? AND t.revoked_at IS NULL
-           AND (t.expires_at IS NULL OR t.expires_at > NOW())
-         LIMIT 1`,
-        [token]
-      );
-      if (rows[0]) {
-        const row = rows[0];
-        req.user = {
-          id: Number(row.id),
-          username: row.username,
-          email: row.email,
-          full_name: row.full_name,
-          role: row.role_name,
-          role_name: row.role_name,
-          locked: Boolean(row.locked)
-        };
-        authTokens.set(token, req.user.id);
-        return next();
-      }
-    } catch (err) {
-      // eslint-disable-next-line no-console
-      console.error("auth token lookup failed:", err.message);
-    }
-  }
-
-  return res.status(401).json({ message: "Unauthorized" });
-}
+app.use("/api/v1", createAuthRouter({ authController, authRequired }));
 
 function appendUserActivity(action, detail) {
   userActivity.unshift({
@@ -1126,142 +754,13 @@ async function dashboardSummaryFromDb() {
   };
 }
 
-// ===== health & auth =====
-app.get("/api/v1/health", (_req, res) => {
-  res.json({ ok: true, service: "ai-inventory-backend", time: nowIso() });
-});
-
-app.post("/api/v1/auth/login", async (req, res) => {
-  const { email, password } = req.body || {};
-  if (MYSQL_ENABLED) {
-    try {
-      const rows = await dbQuery(
-        `SELECT u.id, u.username, u.email, u.password_hash, u.full_name, u.locked, r.code AS role_name
-         FROM users u
-         JOIN roles r ON r.id = u.role_id
-         WHERE LOWER(u.email) = LOWER(?)
-         LIMIT 1`,
-        [String(email || "").trim()]
-      );
-      const row = rows[0];
-      if (!row) {
-        if (MYSQL_ENABLED) return res.status(401).json({ message: "Invalid email or password" });
-      } else {
-      const pass = String(password || "");
-      const stored = String(row.password_hash || "");
-      const demoHashCompat = stored.startsWith("$2b$10$demo.hash") && pass === "123456";
-      if (pass !== stored && !demoHashCompat) return res.status(401).json({ message: "Invalid email or password" });
-      if (row.locked) return res.status(403).json({ message: "Account is locked" });
-
-      const token = `demo-token-${row.id}-${Date.now()}`;
-      authTokens.set(token, Number(row.id));
-      await dbQuery("UPDATE users SET last_login = NOW() WHERE id = ?", [row.id]);
-      await dbQuery(
-        "INSERT INTO user_sessions (user_id, device, ip, started_at, active) VALUES (?, ?, ?, NOW(), 1)",
-        [row.id, "Web Browser", req.ip]
-      );
-      await dbQuery(
-        "INSERT INTO auth_tokens (user_id, token_hash, issued_at, expires_at) VALUES (?, ?, NOW(), DATE_ADD(NOW(), INTERVAL 30 DAY))",
-        [row.id, token]
-      );
-      await dbQuery(
-        "INSERT INTO user_activity_logs (user_id, action, detail, created_at) VALUES (?, 'LOGIN', ?, NOW())",
-        [row.id, row.username]
-      );
-      return res.json({
-        data: {
-          token,
-          user: {
-            id: Number(row.id),
-            username: row.username,
-            email: row.email,
-            full_name: row.full_name,
-            role: row.role_name,
-            role_name: row.role_name
-          }
-        }
-      });
-      }
-    } catch (err) {
-      // eslint-disable-next-line no-console
-      console.error("mysql login failed:", err.message);
-      // fallback to in-memory login path below
-    }
-  }
-
-  const user = users.find(
-    (u) => u.email.toLowerCase() === String(email || "").toLowerCase() && u.password === password
-  );
-  if (!user) return res.status(401).json({ message: "Invalid email or password" });
-  if (user.locked) return res.status(403).json({ message: "Account is locked" });
-
-  const token = `demo-token-${user.id}-${Date.now()}`;
-  authTokens.set(token, user.id);
-  user.last_login = nowIso();
-  sessions.push({
-    id: sessionIdSeq++,
-    user_id: user.id,
-    device: "Web Browser",
-    ip: req.ip,
-    started_at: nowIso(),
-    active: true
-  });
-  appendUserActivity("LOGIN", user.username);
-  return res.json({
-    data: {
-      token,
-      user: {
-        id: user.id,
-        username: user.username,
-        email: user.email,
-        full_name: user.full_name,
-        role: user.role,
-        role_name: user.role_name
-      }
-    }
-  });
-});
-
-app.post("/api/v1/auth/logout", authRequired, async (req, res) => {
-  const authHeader = req.header("authorization") || "";
-  const token = authHeader.replace("Bearer ", "").trim();
-  if (MYSQL_ENABLED && token) {
-    try {
-      await dbQuery("UPDATE auth_tokens SET revoked_at = NOW() WHERE token_hash = ? AND revoked_at IS NULL", [token]);
-      await dbQuery(
-        "INSERT INTO user_activity_logs (user_id, action, detail, created_at) VALUES (?, 'LOGOUT', ?, NOW())",
-        [req.user?.id || null, req.user?.username || "unknown"]
-      );
-    } catch (err) {
-      // eslint-disable-next-line no-console
-      console.error("mysql logout failed:", err.message);
-    }
-  }
-  if (token && token !== "demo-token") authTokens.delete(token);
-  appendUserActivity("LOGOUT", req.user?.username || "unknown");
-  res.json({ data: { ok: true } });
-});
-
-app.get("/api/v1/auth/me", authRequired, (req, res) => {
-  res.json({
-    data: {
-      id: req.user.id,
-      username: req.user.username,
-      email: req.user.email,
-      full_name: req.user.full_name,
-      role: req.user.role,
-      role_name: req.user.role_name
-    }
-  });
-});
-
 // ===== dashboard =====
 app.get("/api/v1/dashboard/summary", authRequired, async (req, res) => {
   const period = String(req.query.period || "7d");
   const from = String(req.query.from || "");
   const to = String(req.query.to || "");
   let summary = dashboardSummary();
-  if (MYSQL_ENABLED) {
+  if (isMysqlEnabled()) {
     try {
       summary = await dashboardSummaryFromDb();
     } catch (err) {
@@ -1286,7 +785,7 @@ app.get("/api/v1/dashboard/summary", authRequired, async (req, res) => {
 app.get("/api/v1/categories", authRequired, async (req, res) => {
   const q = String(req.query.q || "").toLowerCase().trim();
   const status = String(req.query.status || "ALL");
-  if (MYSQL_ENABLED) {
+  if (isMysqlEnabled()) {
     const rows = await dbQuery(
       `SELECT c.id, c.name_en, c.name_km, c.description, c.status, c.icon_url, c.created_by, c.created_at, c.updated_by, c.updated_at,
               COUNT(p.id) AS product_count
@@ -1318,7 +817,7 @@ app.post("/api/v1/categories", authRequired, async (req, res) => {
   const name_en = String(body.name_en || "").trim();
   const name_km = String(body.name_km || "").trim();
   if (!name_en || !name_km) return res.status(400).json({ message: "name_en and name_km are required" });
-  if (MYSQL_ENABLED) {
+  if (isMysqlEnabled()) {
     const dup = await dbQuery(
       "SELECT id FROM categories WHERE LOWER(name_en) = LOWER(?) OR name_km = ? LIMIT 1",
       [name_en, name_km]
@@ -1364,7 +863,7 @@ app.post("/api/v1/categories", authRequired, async (req, res) => {
 
 app.put("/api/v1/categories/:id", authRequired, async (req, res) => {
   const id = toNumber(req.params.id, -1);
-  if (MYSQL_ENABLED) {
+  if (isMysqlEnabled()) {
     const exists = await dbQuery("SELECT id FROM categories WHERE id = ?", [id]);
     if (!exists[0]) return res.status(404).json({ message: "Category not found" });
     const body = req.body || {};
@@ -1400,7 +899,7 @@ app.put("/api/v1/categories/:id", authRequired, async (req, res) => {
 
 app.delete("/api/v1/categories/:id", authRequired, async (req, res) => {
   const id = toNumber(req.params.id, -1);
-  if (MYSQL_ENABLED) {
+  if (isMysqlEnabled()) {
     const rows = await dbQuery(
       "SELECT c.*, (SELECT COUNT(*) FROM products p WHERE p.category_id = c.id) AS product_count FROM categories c WHERE c.id = ?",
       [id]
@@ -1428,7 +927,7 @@ app.get("/api/v1/products", authRequired, async (req, res) => {
   const supplier = String(req.query.supplier || "ALL");
   const status = String(req.query.status || "ALL");
   const stock = String(req.query.stock || "ALL");
-  if (MYSQL_ENABLED) {
+  if (isMysqlEnabled()) {
     const rows = await dbQuery(
       `SELECT p.id, p.product_name, p.barcode, COALESCE(c.name_en, 'General') AS category_name,
               p.quantity, p.cost_price, p.selling_price, p.min_stock_level, p.supplier, p.expiry_date, p.image_url,
@@ -1468,7 +967,7 @@ app.get("/api/v1/products", authRequired, async (req, res) => {
 
 app.get("/api/v1/products/:id", authRequired, async (req, res) => {
   const id = toNumber(req.params.id, -1);
-  if (MYSQL_ENABLED) {
+  if (isMysqlEnabled()) {
     const rows = await dbQuery(
       `SELECT p.id, p.product_name, p.barcode, COALESCE(c.name_en, 'General') AS category_name,
               p.quantity, p.cost_price, p.selling_price, p.min_stock_level, p.supplier, p.expiry_date, p.image_url,
@@ -1492,7 +991,7 @@ app.post("/api/v1/products", authRequired, async (req, res) => {
   const product_name = String(body.product_name || "").trim();
   const barcode = String(body.barcode || "").trim();
   if (!product_name || !barcode) return res.status(400).json({ message: "product_name and barcode are required" });
-  if (MYSQL_ENABLED) {
+  if (isMysqlEnabled()) {
     const dup = await dbQuery("SELECT id FROM products WHERE barcode = ? LIMIT 1", [barcode]);
     if (dup[0]) return res.status(400).json({ message: "Barcode already exists" });
     let categoryId = null;
@@ -1556,7 +1055,7 @@ app.post("/api/v1/products", authRequired, async (req, res) => {
 
 app.put("/api/v1/products/:id", authRequired, async (req, res) => {
   const id = toNumber(req.params.id, -1);
-  if (MYSQL_ENABLED) {
+  if (isMysqlEnabled()) {
     const existing = await dbQuery("SELECT * FROM products WHERE id = ? LIMIT 1", [id]);
     if (!existing[0]) return res.status(404).json({ message: "Product not found" });
     const body = req.body || {};
@@ -1630,7 +1129,7 @@ app.put("/api/v1/products/:id", authRequired, async (req, res) => {
 
 app.delete("/api/v1/products/:id", authRequired, async (req, res) => {
   const id = toNumber(req.params.id, -1);
-  if (MYSQL_ENABLED) {
+  if (isMysqlEnabled()) {
     const rows = await dbQuery("SELECT * FROM products WHERE id = ? LIMIT 1", [id]);
     if (!rows[0]) return res.status(404).json({ message: "Product not found" });
     await dbQuery("DELETE FROM products WHERE id = ?", [id]);
@@ -1644,7 +1143,7 @@ app.delete("/api/v1/products/:id", authRequired, async (req, res) => {
 
 app.post("/api/v1/products/import", authRequired, async (req, res) => {
   const rows = Array.isArray(req.body?.rows) ? req.body.rows : [];
-  if (MYSQL_ENABLED) {
+  if (isMysqlEnabled()) {
     const inserted = [];
     for (const r of rows) {
       const product_name = String(r.product_name || "").trim();
@@ -1713,7 +1212,7 @@ app.post("/api/v1/products/import", authRequired, async (req, res) => {
 app.get("/api/v1/inventory/summary", authRequired, async (req, res) => {
   const store = String(req.query.store || "MAIN");
   const windowDays = toNumber(req.query.window_days, 30);
-  if (MYSQL_ENABLED) {
+  if (isMysqlEnabled()) {
     const rows = await dbQuery(
       `SELECT
         SUM(CASE WHEN quantity < min_stock_level THEN 1 ELSE 0 END) AS low_stock_count,
@@ -1760,7 +1259,7 @@ app.get("/api/v1/inventory/summary", authRequired, async (req, res) => {
 
 app.get("/api/v1/inventory/movements", authRequired, async (req, res) => {
   const barcode = String(req.query.barcode || "");
-  if (MYSQL_ENABLED) {
+  if (isMysqlEnabled()) {
     const rows = await dbQuery(
       `SELECT m.id, m.created_at AS time, m.store_code AS store, m.product_id, p.product_name, p.barcode,
               m.movement_type AS type, m.qty, m.reason, m.approved_by
@@ -1778,7 +1277,7 @@ app.get("/api/v1/inventory/movements", authRequired, async (req, res) => {
 
 app.get("/api/v1/inventory/lots", authRequired, async (req, res) => {
   const store = String(req.query.store || "MAIN");
-  if (MYSQL_ENABLED) {
+  if (isMysqlEnabled()) {
     const rows = await dbQuery(
       `SELECT l.id, l.product_id, p.product_name, p.barcode, l.lot_no AS lot, l.qty, l.expiry_date AS expiry, l.supplier, l.store_code AS store
        FROM stock_lots l
@@ -1802,7 +1301,7 @@ app.post("/api/v1/inventory/receive", authRequired, async (req, res) => {
   const { barcode, quantity, reason, batch_no = "", expiry_date = "", supplier = "" } = req.body || {};
   const qty = Math.max(0, toNumber(quantity, 0));
   if (!barcode || qty < 1) return res.status(400).json({ message: "barcode and quantity are required" });
-  if (MYSQL_ENABLED) {
+  if (isMysqlEnabled()) {
     const rows = await dbQuery("SELECT * FROM products WHERE barcode = ? LIMIT 1", [String(barcode).trim()]);
     const product = rows[0];
     if (!product) return res.status(404).json({ message: "Product not found by barcode" });
@@ -1862,7 +1361,7 @@ app.post("/api/v1/inventory/adjust", authRequired, async (req, res) => {
   const { barcode, action = "DECREASE", quantity, reason = "CORRECTION", approved_by = "" } = req.body || {};
   const qty = Math.max(0, toNumber(quantity, 0));
   if (!barcode || qty < 1) return res.status(400).json({ message: "barcode and quantity are required" });
-  if (MYSQL_ENABLED) {
+  if (isMysqlEnabled()) {
     const rows = await dbQuery("SELECT * FROM products WHERE barcode = ? LIMIT 1", [String(barcode).trim()]);
     const product = rows[0];
     if (!product) return res.status(404).json({ message: "Product not found by barcode" });
@@ -1911,7 +1410,7 @@ app.post("/api/v1/inventory/adjust", authRequired, async (req, res) => {
 
 app.post("/api/v1/inventory/adjust/bulk", authRequired, async (req, res) => {
   const rows = Array.isArray(req.body?.rows) ? req.body.rows : [];
-  if (MYSQL_ENABLED) {
+  if (isMysqlEnabled()) {
     let applied = 0;
     for (const r of rows) {
       const productRows = await dbQuery("SELECT * FROM products WHERE barcode = ? LIMIT 1", [String(r.barcode || "").trim()]);
@@ -1964,7 +1463,7 @@ app.post("/api/v1/inventory/adjust/bulk", authRequired, async (req, res) => {
 // ===== sales =====
 app.get("/api/v1/sales", authRequired, async (req, res) => {
   const limit = clamp(toNumber(req.query.limit, 20), 1, 100);
-  if (MYSQL_ENABLED) {
+  if (isMysqlEnabled()) {
     const rows = await dbQuery(
       `SELECT id, sale_code AS sale_id, sale_time, payment_method, customer_name, customer_phone,
               subtotal, discount_pct, discount_amount, tax_pct, tax_amount, total, total_khr, paid_amount,
@@ -2000,7 +1499,7 @@ app.post("/api/v1/sales", authRequired, async (req, res) => {
   }
 
   const normalizedItems = [];
-  if (MYSQL_ENABLED) {
+  if (isMysqlEnabled()) {
     for (const item of items) {
       const barcode = String(item.barcode || "").trim();
       const qty = Math.max(0, toNumber(item.qty, 0));
@@ -2160,7 +1659,7 @@ app.post("/api/v1/sales/refund", authRequired, async (req, res) => {
   const saleId = toNumber(req.body?.sale_id, -1);
   const saleCode = String(req.body?.sale_id || "").trim();
   const reason = String(req.body?.reason || "Refund");
-  if (MYSQL_ENABLED) {
+  if (isMysqlEnabled()) {
     const saleRows = await dbQuery(
       "SELECT * FROM sales WHERE (id = ? OR sale_code = ?) AND is_refund = 0 LIMIT 1",
       [saleId, saleCode]
@@ -2236,7 +1735,7 @@ app.post("/api/v1/sales/refund", authRequired, async (req, res) => {
 
 app.post("/api/v1/sales/shift-close", authRequired, async (req, res) => {
   const payload = req.body || {};
-  if (MYSQL_ENABLED) {
+  if (isMysqlEnabled()) {
     const cashRows = await dbQuery("SELECT COALESCE(SUM(total),0) AS s FROM sales WHERE is_refund = 0 AND payment_method = 'CASH'");
     const cashSales = Number(cashRows[0]?.s || 0);
     const record = {
@@ -2270,7 +1769,7 @@ app.post("/api/v1/sales/shift-close", authRequired, async (req, res) => {
 });
 
 app.get("/api/v1/sales/shift-closures", authRequired, async (_req, res) => {
-  if (MYSQL_ENABLED) {
+  if (isMysqlEnabled()) {
     const rows = await dbQuery(
       `SELECT id, opening_cash, cash_in, cash_out, cash_sales_total, expected_drawer, note, created_by, created_at
        FROM shift_closures
@@ -2489,7 +1988,7 @@ app.get("/api/v1/reports/run", authRequired, async (req, res) => {
   const from = String(req.query.from || "");
   const to = String(req.query.to || "");
   const compare_prev = String(req.query.compare_prev || "false") === "true";
-  const rows = MYSQL_ENABLED ? await computeReportFromDb(type) : computeReport(type);
+  const rows = isMysqlEnabled() ? await computeReportFromDb(type) : computeReport(type);
   const run = {
     id: reportRunIdSeq++,
     type,
@@ -2498,7 +1997,7 @@ app.get("/api/v1/reports/run", authRequired, async (req, res) => {
     filter: `${from || "-"} to ${to || "-"}`,
     compare_prev
   };
-  if (MYSQL_ENABLED) {
+  if (isMysqlEnabled()) {
     const result = await dbQuery(
       "INSERT INTO report_runs (report_type, filter_text, compare_prev, generated_by) VALUES (?, ?, ?, ?)",
       [type, `${from || "-"} to ${to || "-"}`, compare_prev ? 1 : 0, req.user.full_name]
@@ -2510,7 +2009,7 @@ app.get("/api/v1/reports/run", authRequired, async (req, res) => {
 });
 
 app.get("/api/v1/reports/history", authRequired, async (_req, res) => {
-  if (MYSQL_ENABLED) {
+  if (isMysqlEnabled()) {
     const rows = await dbQuery(
       `SELECT id, report_type AS type, generated_at, generated_by, filter_text AS filter, compare_prev
        FROM report_runs ORDER BY id DESC LIMIT 100`
@@ -2522,7 +2021,7 @@ app.get("/api/v1/reports/history", authRequired, async (_req, res) => {
 
 app.post("/api/v1/reports/export", authRequired, async (req, res) => {
   const { type = "sales-daily", format = "CSV" } = req.body || {};
-  const rows = MYSQL_ENABLED ? await computeReportFromDb(String(type)) : computeReport(String(type));
+  const rows = isMysqlEnabled() ? await computeReportFromDb(String(type)) : computeReport(String(type));
   const normalizedFormat = String(format).toUpperCase();
   if (normalizedFormat === "CSV") {
     if (!rows.length) return res.json({ data: { content: "", filename: "report.csv", format: "CSV" } });
@@ -2565,7 +2064,7 @@ app.post("/api/v1/reports/export", authRequired, async (req, res) => {
 
 app.post("/api/v1/reports/schedule", authRequired, async (req, res) => {
   const body = req.body || {};
-  if (MYSQL_ENABLED) {
+  if (isMysqlEnabled()) {
     const type = String(body.type || "sales-daily");
     const schedule = String(body.schedule || "NONE");
     const toEmail = String(body.to_email || "");
@@ -2594,7 +2093,7 @@ app.post("/api/v1/reports/schedule", authRequired, async (req, res) => {
 
 // ===== AI forecast =====
 app.get("/api/v1/ai/model-performance", authRequired, async (_req, res) => {
-  if (MYSQL_ENABLED) {
+  if (isMysqlEnabled()) {
     const rows = await dbQuery(
       `SELECT category_name AS category, prophet_mape, arima_mape, prophet_mae, arima_mae, prophet_rmse, arima_rmse, selected_model AS selected
        FROM ai_model_performance ORDER BY id ASC`
@@ -2605,7 +2104,7 @@ app.get("/api/v1/ai/model-performance", authRequired, async (_req, res) => {
 });
 
 app.get("/api/v1/ai/forecast/versions", authRequired, async (_req, res) => {
-  if (MYSQL_ENABLED) {
+  if (isMysqlEnabled()) {
     const rows = await dbQuery(
       `SELECT id, version_code AS version, product_id AS product, model_name AS model, generated_at, horizon_days AS horizon, mape
        FROM ai_forecast_versions ORDER BY id DESC`
@@ -2616,7 +2115,7 @@ app.get("/api/v1/ai/forecast/versions", authRequired, async (_req, res) => {
 });
 
 app.get("/api/v1/ai/forecast/history", authRequired, async (_req, res) => {
-  if (MYSQL_ENABLED) {
+  if (isMysqlEnabled()) {
     const rows = await dbQuery(
       `SELECT id, created_at AS time, product_id AS product, horizon_days AS horizon, selected_model AS selected, mae, mape, rmse
        FROM ai_forecast_runs ORDER BY id DESC`
@@ -2630,7 +2129,7 @@ app.post("/api/v1/ai/forecast/run", authRequired, async (req, res) => {
   const productId = toNumber(req.body?.product_id, 1);
   const days = clamp(toNumber(req.body?.days, 30), 1, 180);
   const lead = clamp(toNumber(req.body?.lead, 7), 1, 60);
-  if (MYSQL_ENABLED) {
+  if (isMysqlEnabled()) {
     const productRows = await dbQuery("SELECT * FROM products WHERE id = ? LIMIT 1", [productId]);
     const p = productRows[0] || (await dbQuery("SELECT * FROM products ORDER BY id LIMIT 1"))[0];
     if (!p) return res.status(400).json({ message: "No products found" });
@@ -2746,7 +2245,7 @@ app.post("/api/v1/ai/forecast/run", authRequired, async (req, res) => {
 });
 
 app.post("/api/v1/ai/forecast/bulk-run", authRequired, async (req, res) => {
-  if (MYSQL_ENABLED) {
+  if (isMysqlEnabled()) {
     const rows = await dbQuery("SELECT id FROM products");
     return res.json({
       data: {
@@ -2788,7 +2287,7 @@ app.post("/api/v1/ai/forecast/bulk-run", authRequired, async (req, res) => {
 app.get("/api/v1/notifications", authRequired, async (req, res) => {
   const type = String(req.query.type || "ALL");
   const status = String(req.query.status || "ALL");
-  if (MYSQL_ENABLED) {
+  if (isMysqlEnabled()) {
     const rows = await dbQuery(
       `SELECT n.id, DATE_FORMAT(n.notification_time, '%Y-%m-%d %H:%i') AS time,
               n.notification_type AS type, n.priority, COALESCE(p.product_name, '-') AS product, n.message, n.channel,
@@ -2819,7 +2318,7 @@ app.get("/api/v1/notifications", authRequired, async (req, res) => {
 
 app.patch("/api/v1/notifications/:id/read", authRequired, async (req, res) => {
   const id = toNumber(req.params.id, -1);
-  if (MYSQL_ENABLED) {
+  if (isMysqlEnabled()) {
     const found = await dbQuery("SELECT id FROM notifications WHERE id = ? LIMIT 1", [id]);
     if (!found[0]) return res.status(404).json({ message: "Notification not found" });
     await dbQuery("UPDATE notifications SET is_read = 1, read_by = ?, read_at = NOW() WHERE id = ?", [req.user.id, id]);
@@ -2835,7 +2334,7 @@ app.patch("/api/v1/notifications/:id/read", authRequired, async (req, res) => {
 });
 
 app.patch("/api/v1/notifications/read-all", authRequired, async (req, res) => {
-  if (MYSQL_ENABLED) {
+  if (isMysqlEnabled()) {
     const result = await dbQuery("UPDATE notifications SET is_read = 1, read_by = ?, read_at = NOW() WHERE is_read = 0", [req.user.id]);
     return res.json({ data: { updated: result.affectedRows || 0 } });
   }
@@ -2850,7 +2349,7 @@ app.patch("/api/v1/notifications/read-all", authRequired, async (req, res) => {
 app.patch("/api/v1/notifications/bulk-action", authRequired, async (req, res) => {
   const ids = Array.isArray(req.body?.ids) ? req.body.ids.map((x) => toNumber(x, -1)) : [];
   const action = String(req.body?.action || "").toUpperCase();
-  if (MYSQL_ENABLED) {
+  if (isMysqlEnabled()) {
     if (!ids.length) return res.json({ data: { action, updated: 0 } });
     const placeholders = ids.map(() => "?").join(",");
     let sql = "";
@@ -2883,7 +2382,7 @@ app.patch("/api/v1/notifications/bulk-action", authRequired, async (req, res) =>
 });
 
 app.post("/api/v1/notifications/retry-failed", authRequired, async (_req, res) => {
-  if (MYSQL_ENABLED) {
+  if (isMysqlEnabled()) {
     const result = await dbQuery("UPDATE notifications SET delivery_status = 'SENT' WHERE delivery_status = 'FAILED'");
     return res.json({ data: { retried: result.affectedRows || 0 } });
   }
@@ -2898,7 +2397,7 @@ app.post("/api/v1/notifications/retry-failed", authRequired, async (_req, res) =
 });
 
 app.get("/api/v1/notifications/preferences", authRequired, async (_req, res) => {
-  if (MYSQL_ENABLED) {
+  if (isMysqlEnabled()) {
     const row = (await dbQuery("SELECT * FROM notification_preferences ORDER BY id LIMIT 1"))[0];
     if (!row) return res.json({ data: null });
     return res.json({
@@ -2917,7 +2416,7 @@ app.get("/api/v1/notifications/preferences", authRequired, async (_req, res) => 
 });
 
 app.put("/api/v1/notifications/preferences", authRequired, async (req, res) => {
-  if (MYSQL_ENABLED) {
+  if (isMysqlEnabled()) {
     const body = req.body || {};
     const existing = await dbQuery("SELECT id FROM notification_preferences ORDER BY id LIMIT 1");
     if (existing[0]) {
@@ -2960,7 +2459,7 @@ app.put("/api/v1/notifications/preferences", authRequired, async (req, res) => {
 });
 
 app.get("/api/v1/notifications/rules", authRequired, async (_req, res) => {
-  if (MYSQL_ENABLED) {
+  if (isMysqlEnabled()) {
     const rows = await dbQuery(
       "SELECT id, rule_code AS rule, severity, channel, active FROM notification_rules ORDER BY id ASC"
     );
@@ -2971,7 +2470,7 @@ app.get("/api/v1/notifications/rules", authRequired, async (_req, res) => {
 
 app.patch("/api/v1/notifications/rules/:id/toggle", authRequired, async (req, res) => {
   const id = toNumber(req.params.id, -1);
-  if (MYSQL_ENABLED) {
+  if (isMysqlEnabled()) {
     const found = await dbQuery("SELECT id, active FROM notification_rules WHERE id = ? LIMIT 1", [id]);
     if (!found[0]) return res.status(404).json({ message: "Rule not found" });
     await dbQuery("UPDATE notification_rules SET active = ? WHERE id = ?", [found[0].active ? 0 : 1, id]);
@@ -2987,7 +2486,7 @@ app.patch("/api/v1/notifications/rules/:id/toggle", authRequired, async (req, re
 // ===== users =====
 app.get("/api/v1/users", authRequired, async (req, res) => {
   const q = String(req.query.q || "").trim().toLowerCase();
-  if (MYSQL_ENABLED) {
+  if (isMysqlEnabled()) {
     const rows = await dbQuery(
       `SELECT u.id, u.username, u.email, u.full_name, r.code AS role, r.code AS role_name, u.status, u.locked, u.force_reset,
               u.created_by, u.created_at, u.updated_by, u.updated_at, u.last_login
@@ -3018,7 +2517,7 @@ app.post("/api/v1/users", authRequired, async (req, res) => {
   const email = String(body.email || "").trim().toLowerCase();
   const password = String(body.password || "");
   if (!username || !full_name || !email) return res.status(400).json({ message: "username, full_name, and email are required" });
-  if (MYSQL_ENABLED) {
+  if (isMysqlEnabled()) {
     const dupUser = await dbQuery("SELECT id FROM users WHERE LOWER(username) = LOWER(?) LIMIT 1", [username]);
     if (dupUser[0]) return res.status(400).json({ message: "Username already exists" });
     const dupEmail = await dbQuery("SELECT id FROM users WHERE LOWER(email) = LOWER(?) LIMIT 1", [email]);
@@ -3077,7 +2576,7 @@ app.post("/api/v1/users", authRequired, async (req, res) => {
 
 app.put("/api/v1/users/:id", authRequired, async (req, res) => {
   const id = toNumber(req.params.id, -1);
-  if (MYSQL_ENABLED) {
+  if (isMysqlEnabled()) {
     const existing = await dbQuery("SELECT * FROM users WHERE id = ? LIMIT 1", [id]);
     if (!existing[0]) return res.status(404).json({ message: "User not found" });
     const body = req.body || {};
@@ -3142,7 +2641,7 @@ app.put("/api/v1/users/:id", authRequired, async (req, res) => {
 
 app.delete("/api/v1/users/:id", authRequired, async (req, res) => {
   const id = toNumber(req.params.id, -1);
-  if (MYSQL_ENABLED) {
+  if (isMysqlEnabled()) {
     const rows = await dbQuery("SELECT * FROM users WHERE id = ? LIMIT 1", [id]);
     if (!rows[0]) return res.status(404).json({ message: "User not found" });
     await dbQuery("DELETE FROM users WHERE id = ?", [id]);
@@ -3159,7 +2658,7 @@ app.delete("/api/v1/users/:id", authRequired, async (req, res) => {
 
 app.patch("/api/v1/users/:id/lock-toggle", authRequired, async (req, res) => {
   const id = toNumber(req.params.id, -1);
-  if (MYSQL_ENABLED) {
+  if (isMysqlEnabled()) {
     const rows = await dbQuery("SELECT id, username, locked FROM users WHERE id = ? LIMIT 1", [id]);
     const user = rows[0];
     if (!user) return res.status(404).json({ message: "User not found" });
@@ -3179,7 +2678,7 @@ app.patch("/api/v1/users/:id/lock-toggle", authRequired, async (req, res) => {
 
 app.patch("/api/v1/users/:id/force-reset", authRequired, async (req, res) => {
   const id = toNumber(req.params.id, -1);
-  if (MYSQL_ENABLED) {
+  if (isMysqlEnabled()) {
     const rows = await dbQuery("SELECT id, username FROM users WHERE id = ? LIMIT 1", [id]);
     const user = rows[0];
     if (!user) return res.status(404).json({ message: "User not found" });
@@ -3199,7 +2698,7 @@ app.patch("/api/v1/users/:id/force-reset", authRequired, async (req, res) => {
 
 app.get("/api/v1/users/:id/permissions", authRequired, async (req, res) => {
   const id = toNumber(req.params.id, -1);
-  if (MYSQL_ENABLED) {
+  if (isMysqlEnabled()) {
     const user = (await dbQuery("SELECT id FROM users WHERE id = ? LIMIT 1", [id]))[0];
     if (!user) return res.status(404).json({ message: "User not found" });
     const rows = await dbQuery("SELECT permission_code FROM user_permissions WHERE user_id = ? ORDER BY permission_code", [id]);
@@ -3212,7 +2711,7 @@ app.get("/api/v1/users/:id/permissions", authRequired, async (req, res) => {
 
 app.put("/api/v1/users/:id/permissions", authRequired, async (req, res) => {
   const id = toNumber(req.params.id, -1);
-  if (MYSQL_ENABLED) {
+  if (isMysqlEnabled()) {
     const user = (await dbQuery("SELECT id, username FROM users WHERE id = ? LIMIT 1", [id]))[0];
     if (!user) return res.status(404).json({ message: "User not found" });
     const perms = Array.isArray(req.body?.permissions) ? req.body.permissions : [];
@@ -3230,7 +2729,7 @@ app.put("/api/v1/users/:id/permissions", authRequired, async (req, res) => {
 
 app.get("/api/v1/users/sessions", authRequired, async (req, res) => {
   const userId = toNumber(req.query.user_id, -1);
-  if (MYSQL_ENABLED) {
+  if (isMysqlEnabled()) {
     const rows = await dbQuery(
       `SELECT id, user_id, device, ip, started_at, active
        FROM user_sessions
@@ -3246,7 +2745,7 @@ app.get("/api/v1/users/sessions", authRequired, async (req, res) => {
 
 app.post("/api/v1/users/:id/sessions/revoke", authRequired, async (req, res) => {
   const id = toNumber(req.params.id, -1);
-  if (MYSQL_ENABLED) {
+  if (isMysqlEnabled()) {
     const result = await dbQuery("UPDATE user_sessions SET active = 0 WHERE user_id = ? AND active = 1", [id]);
     await dbQuery("INSERT INTO user_activity_logs (user_id, action, detail, created_at) VALUES (?, 'SESSIONS_REVOKED', ?, NOW())", [id, `user:${id}`]);
     return res.json({ data: { revoked: result.affectedRows || 0 } });
@@ -3264,7 +2763,7 @@ app.post("/api/v1/users/:id/sessions/revoke", authRequired, async (req, res) => 
 
 app.post("/api/v1/users/:id/logout-all", authRequired, async (req, res) => {
   const id = toNumber(req.params.id, -1);
-  if (MYSQL_ENABLED) {
+  if (isMysqlEnabled()) {
     const result = await dbQuery("UPDATE user_sessions SET active = 0 WHERE user_id = ? AND active = 1", [id]);
     await dbQuery("UPDATE auth_tokens SET revoked_at = NOW() WHERE user_id = ? AND revoked_at IS NULL", [id]);
     await dbQuery("INSERT INTO user_activity_logs (user_id, action, detail, created_at) VALUES (?, 'LOGOUT_ALL_DEVICES', ?, NOW())", [id, `user:${id}`]);
@@ -3282,7 +2781,7 @@ app.post("/api/v1/users/:id/logout-all", authRequired, async (req, res) => {
 });
 
 app.get("/api/v1/users/activity", authRequired, async (_req, res) => {
-  if (MYSQL_ENABLED) {
+  if (isMysqlEnabled()) {
     const rows = await dbQuery(
       "SELECT id, created_at AS time, action, detail FROM user_activity_logs ORDER BY id DESC LIMIT 200"
     );
@@ -3293,7 +2792,7 @@ app.get("/api/v1/users/activity", authRequired, async (_req, res) => {
 
 // ===== email settings =====
 app.get("/api/v1/email-settings", authRequired, async (_req, res) => {
-  if (MYSQL_ENABLED) {
+  if (isMysqlEnabled()) {
     const row = (await dbQuery("SELECT * FROM email_settings ORDER BY id LIMIT 1"))[0];
     if (!row) return res.json({ data: null });
     const recipients = await dbQuery(
@@ -3320,7 +2819,7 @@ app.get("/api/v1/email-settings", authRequired, async (_req, res) => {
 });
 
 app.put("/api/v1/email-settings", authRequired, async (req, res) => {
-  if (MYSQL_ENABLED) {
+  if (isMysqlEnabled()) {
     const body = req.body || {};
     const rows = await dbQuery("SELECT id FROM email_settings ORDER BY id LIMIT 1");
     let settingId = rows[0]?.id;
@@ -3386,7 +2885,7 @@ app.post("/api/v1/email-settings/test", authRequired, async (req, res) => {
         .split(",")
         .map((x) => x.trim())
         .filter(Boolean);
-  if (MYSQL_ENABLED && !to.length) {
+  if (isMysqlEnabled() && !to.length) {
     const row = (await dbQuery("SELECT id FROM email_settings ORDER BY id LIMIT 1"))[0];
     if (row) {
       const recipients = await dbQuery("SELECT recipient_email FROM email_recipients WHERE email_setting_id = ?", [row.id]);
