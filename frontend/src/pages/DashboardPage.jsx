@@ -1,5 +1,5 @@
 import React from "react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import Layout from "../components/Layout";
 import { apiFetch } from "../lib/api";
@@ -44,16 +44,107 @@ const fallback = {
   ]
 };
 
+function formatInputDate(value) {
+  return value.toISOString().slice(0, 10);
+}
+
+function formatDisplayDate(value) {
+  if (!value) return "";
+  const [year, month, day] = String(value).split("-");
+  if (!year || !month || !day) return "";
+  return `${month}-${day}-${year}`;
+}
+
+function parseDisplayDate(value) {
+  const normalized = String(value || "").trim().replace(/\//g, "-");
+  const match = normalized.match(/^(\d{2})-(\d{2})-(\d{4})$/);
+  if (!match) return "";
+  const [, month, day, year] = match;
+  const parsed = new Date(`${year}-${month}-${day}T00:00:00`);
+  if (Number.isNaN(parsed.getTime())) return "";
+  if (parsed.getMonth() + 1 !== Number(month) || parsed.getDate() !== Number(day) || parsed.getFullYear() !== Number(year)) {
+    return "";
+  }
+  return `${year}-${month}-${day}`;
+}
+
+function buildDefaultRange(nextPeriod) {
+  const end = new Date();
+  const start = new Date(end);
+  if (nextPeriod === "30d") {
+    start.setDate(start.getDate() - 29);
+  } else {
+    start.setDate(start.getDate() - 6);
+  }
+  return {
+    from: formatInputDate(start),
+    to: formatInputDate(end)
+  };
+}
+
 export default function DashboardPage() {
   const navigate = useNavigate();
+  const initialRange = buildDefaultRange("7d");
+  const fromPickerRef = useRef(null);
+  const toPickerRef = useRef(null);
   const [summary, setSummary] = useState(fallback);
   const [err, setErr] = useState("");
   const [period, setPeriod] = useState("7d");
-  const [fromDate, setFromDate] = useState("");
-  const [toDate, setToDate] = useState("");
+  const [fromDate, setFromDate] = useState(initialRange.from);
+  const [toDate, setToDate] = useState(initialRange.to);
+  const [fromText, setFromText] = useState(formatDisplayDate(initialRange.from));
+  const [toText, setToText] = useState(formatDisplayDate(initialRange.to));
   const [loading, setLoading] = useState(false);
   const [lastUpdated, setLastUpdated] = useState(new Date());
   const [nowTick, setNowTick] = useState(new Date());
+
+  const handlePeriodChange = (nextPeriod) => {
+    setPeriod(nextPeriod);
+    if (nextPeriod === "custom") {
+      setFromDate("");
+      setToDate("");
+      setFromText("");
+      setToText("");
+      return;
+    }
+    const defaults = buildDefaultRange(nextPeriod);
+    setFromDate(defaults.from);
+    setToDate(defaults.to);
+    setFromText(formatDisplayDate(defaults.from));
+    setToText(formatDisplayDate(defaults.to));
+  };
+
+  const handleCustomDateChange = (field, value) => {
+    const parsed = parseDisplayDate(value);
+    if (field === "from") {
+      setFromText(value);
+      setFromDate(parsed);
+      return;
+    }
+    setToText(value);
+    setToDate(parsed);
+  };
+
+  const handlePickerChange = (field, value) => {
+    if (field === "from") {
+      setFromDate(value);
+      setFromText(formatDisplayDate(value));
+      return;
+    }
+    setToDate(value);
+    setToText(formatDisplayDate(value));
+  };
+
+  const openPicker = (field) => {
+    const ref = field === "from" ? fromPickerRef : toPickerRef;
+    const input = ref.current;
+    if (!input) return;
+    if (typeof input.showPicker === "function") {
+      input.showPicker();
+      return;
+    }
+    input.click();
+  };
 
   const fetchSummary = () => {
     setLoading(true);
@@ -139,7 +230,7 @@ export default function DashboardPage() {
           <div className="dashboard-filter-grid">
             <div>
               <label>{t("Range")}</label>
-              <select value={period} onChange={(e) => setPeriod(e.target.value)}>
+              <select value={period} onChange={(e) => handlePeriodChange(e.target.value)}>
                 <option value="7d">{t("Last 7 Days")}</option>
                 <option value="30d">{t("Last 30 Days")}</option>
                 <option value="custom">{t("Custom")}</option>
@@ -147,11 +238,63 @@ export default function DashboardPage() {
             </div>
             <div>
               <label>{t("From")}</label>
-              <input type="date" value={fromDate} onChange={(e) => setFromDate(e.target.value)} disabled={period !== "custom"} />
+              {period === "custom" ? (
+                <div className="date-text-picker">
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    placeholder="mm-dd-yyyy"
+                    value={fromText}
+                    onChange={(e) => handleCustomDateChange("from", e.target.value)}
+                  />
+                  <button type="button" className="date-picker-icon" onClick={() => openPicker("from")} aria-label={t("Pick date")}>
+                    <svg viewBox="0 0 24 24" aria-hidden="true">
+                      <path d="M7 2h2v3h6V2h2v3h3v17H4V5h3V2zm11 8H6v10h12V10zM8 12h3v3H8v-3z" />
+                    </svg>
+                  </button>
+                  <input
+                    ref={fromPickerRef}
+                    type="date"
+                    tabIndex={-1}
+                    aria-hidden="true"
+                    value={fromDate}
+                    onChange={(e) => handlePickerChange("from", e.target.value)}
+                    style={{ position: "absolute", opacity: 0, pointerEvents: "none", width: 1, height: 1 }}
+                  />
+                </div>
+              ) : (
+                <input type="date" value={fromDate} onChange={(e) => setFromDate(e.target.value)} disabled />
+              )}
             </div>
             <div>
               <label>{t("To")}</label>
-              <input type="date" value={toDate} onChange={(e) => setToDate(e.target.value)} disabled={period !== "custom"} />
+              {period === "custom" ? (
+                <div className="date-text-picker">
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    placeholder="mm-dd-yyyy"
+                    value={toText}
+                    onChange={(e) => handleCustomDateChange("to", e.target.value)}
+                  />
+                  <button type="button" className="date-picker-icon" onClick={() => openPicker("to")} aria-label={t("Pick date")}>
+                    <svg viewBox="0 0 24 24" aria-hidden="true">
+                      <path d="M7 2h2v3h6V2h2v3h3v17H4V5h3V2zm11 8H6v10h12V10zM8 12h3v3H8v-3z" />
+                    </svg>
+                  </button>
+                  <input
+                    ref={toPickerRef}
+                    type="date"
+                    tabIndex={-1}
+                    aria-hidden="true"
+                    value={toDate}
+                    onChange={(e) => handlePickerChange("to", e.target.value)}
+                    style={{ position: "absolute", opacity: 0, pointerEvents: "none", width: 1, height: 1 }}
+                  />
+                </div>
+              ) : (
+                <input type="date" value={toDate} onChange={(e) => setToDate(e.target.value)} disabled />
+              )}
             </div>
           </div>
 

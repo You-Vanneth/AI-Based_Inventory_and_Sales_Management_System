@@ -115,6 +115,7 @@ CREATE TABLE IF NOT EXISTS sales (
   sale_code VARCHAR(40) UNIQUE NOT NULL,
   sale_time TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   payment_method VARCHAR(30) NOT NULL CHECK (payment_method IN ('CASH', 'BANK_TRANSFER')),
+  payment_status VARCHAR(30) NOT NULL DEFAULT 'PAID' CHECK (payment_status IN ('PENDING', 'PAID', 'FAILED')),
   customer_name VARCHAR(120) NOT NULL DEFAULT '-',
   customer_phone VARCHAR(40) NOT NULL DEFAULT '-',
   subtotal NUMERIC(12, 2) NOT NULL DEFAULT 0,
@@ -127,11 +128,27 @@ CREATE TABLE IF NOT EXISTS sales (
   total_khr NUMERIC(14, 2) NOT NULL DEFAULT 0,
   paid_amount NUMERIC(12, 2) NOT NULL DEFAULT 0,
   change_amount NUMERIC(12, 2) NOT NULL DEFAULT 0,
+  transaction_reference VARCHAR(120),
+  payment_proof_url TEXT,
+  paid_at TIMESTAMPTZ,
+  verified_by VARCHAR(120),
+  verified_at TIMESTAMPTZ,
   sync_status VARCHAR(20) NOT NULL DEFAULT 'SYNCED',
   is_refund BOOLEAN NOT NULL DEFAULT FALSE,
   refund_reason VARCHAR(200),
   source_sale_id BIGINT REFERENCES sales(id),
   created_by VARCHAR(120)
+);
+
+CREATE TABLE IF NOT EXISTS bank_transfer_settings (
+  id BIGSERIAL PRIMARY KEY,
+  qr_image_url TEXT,
+  bank_name VARCHAR(120) NOT NULL DEFAULT '',
+  account_name VARCHAR(120) NOT NULL DEFAULT '',
+  account_number VARCHAR(80) NOT NULL DEFAULT '',
+  notes TEXT NOT NULL DEFAULT '',
+  updated_by VARCHAR(120),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 CREATE TABLE IF NOT EXISTS sale_items (

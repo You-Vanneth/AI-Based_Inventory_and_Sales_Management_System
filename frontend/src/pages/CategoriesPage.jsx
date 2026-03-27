@@ -412,8 +412,8 @@ export default function CategoriesPage() {
           emptyText={t("No categories")}
         />
 
-        <div className="row row-wrap mt-12">
-          <div>
+        <div className="products-pagination mt-12">
+          <div className="products-pagination-size">
             <label>{t("Page Size")}</label>
             <select value={pageSize} onChange={(e) => { setPageSize(Number(e.target.value)); setPage(1); }}>
               <option value={5}>5</option>
@@ -421,13 +421,26 @@ export default function CategoriesPage() {
               <option value={20}>20</option>
             </select>
           </div>
-          <div>
-            <label>{t("Page")}</label>
-            <div className="row">
-              <button type="button" className="secondary" onClick={() => setPage((p) => Math.max(1, p - 1))}>{t("Prev")}</button>
-              <button type="button" onClick={() => setPage((p) => Math.min(totalPages, p + 1))}>{t("Next")}</button>
+          <div className="products-pagination-nav">
+            <div className="products-pagination-label">{t("Page")}</div>
+            <div className="products-pagination-controls">
+              <button
+                type="button"
+                className="secondary"
+                disabled={page <= 1}
+                onClick={() => setPage((p) => Math.max(1, p - 1))}
+              >
+                {t("Prev")}
+              </button>
+              <div className="products-pagination-status">{page} / {totalPages}</div>
+              <button
+                type="button"
+                disabled={page >= totalPages}
+                onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+              >
+                {t("Next")}
+              </button>
             </div>
-            <p className="mt-8">{t("Page")} {page} / {totalPages}</p>
           </div>
         </div>
       </section>

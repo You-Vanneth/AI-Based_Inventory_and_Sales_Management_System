@@ -132,6 +132,7 @@ CREATE TABLE IF NOT EXISTS sales (
   sale_code VARCHAR(40) NOT NULL UNIQUE,
   sale_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   payment_method ENUM('CASH','BANK_TRANSFER') NOT NULL,
+  payment_status ENUM('PENDING','PAID','FAILED') NOT NULL DEFAULT 'PAID',
   customer_name VARCHAR(120) NOT NULL DEFAULT '-',
   customer_phone VARCHAR(40) NOT NULL DEFAULT '-',
   subtotal DECIMAL(12,2) NOT NULL DEFAULT 0,
@@ -144,6 +145,11 @@ CREATE TABLE IF NOT EXISTS sales (
   total_khr DECIMAL(14,2) NOT NULL DEFAULT 0,
   paid_amount DECIMAL(12,2) NOT NULL DEFAULT 0,
   change_amount DECIMAL(12,2) NOT NULL DEFAULT 0,
+  transaction_reference VARCHAR(120) NULL,
+  payment_proof_url LONGTEXT NULL,
+  paid_at DATETIME NULL,
+  verified_by VARCHAR(120) NULL,
+  verified_at DATETIME NULL,
   sync_status VARCHAR(20) NOT NULL DEFAULT 'SYNCED',
   is_refund TINYINT(1) NOT NULL DEFAULT 0,
   refund_reason VARCHAR(200) NULL,
@@ -152,6 +158,17 @@ CREATE TABLE IF NOT EXISTS sales (
   KEY idx_sales_sale_time (sale_time),
   KEY idx_sales_payment_method (payment_method),
   CONSTRAINT fk_sales_source_sale FOREIGN KEY (source_sale_id) REFERENCES sales(id)
+) ENGINE=InnoDB;
+
+CREATE TABLE IF NOT EXISTS bank_transfer_settings (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  qr_image_url LONGTEXT NULL,
+  bank_name VARCHAR(120) NOT NULL DEFAULT '',
+  account_name VARCHAR(120) NOT NULL DEFAULT '',
+  account_number VARCHAR(80) NOT NULL DEFAULT '',
+  notes TEXT NOT NULL,
+  updated_by VARCHAR(120) NULL,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 ) ENGINE=InnoDB;
 
 CREATE TABLE IF NOT EXISTS sale_items (

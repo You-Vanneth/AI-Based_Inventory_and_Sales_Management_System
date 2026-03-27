@@ -29,30 +29,9 @@ npm run db:reset
 Schema file: `db/postgres/schema.sql`  
 Seed file: `db/postgres/seed.sql`
 
-## Database (XAMPP MySQL)
+## MySQL (legacy scripts)
 
-Use phpMyAdmin Import with these files:
-- `db/mysql/schema.sql`
-- `db/mysql/seed.sql`
-- `db/mysql/verify.sql` (optional check)
-
-Or run by command line (if `mysql` command exists):
-
-```bash
-npm run db:mysql:schema
-npm run db:mysql:seed
-npm run db:mysql:verify
-```
-
-Database name for XAMPP: `ai_inventory`
-
-Backend DB connection env:
-- `MYSQL_HOST`
-- `MYSQL_PORT`
-- `MYSQL_USER`
-- `MYSQL_PASSWORD`
-- `MYSQL_DATABASE`
-- `MYSQL_SOCKET` (recommended for XAMPP on macOS)
+MySQL scripts remain in `db/mysql`, but the backend now expects PostgreSQL via `DATABASE_URL`.
 
 Current live DB-backed APIs:
 - Auth (`/auth/*`)

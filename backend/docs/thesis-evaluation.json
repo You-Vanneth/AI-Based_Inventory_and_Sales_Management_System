@@ -1,0 +1,69 @@
+{
+  "generated_at": "2026-03-14T08:03:40.002Z",
+  "database": "ai_inventory",
+  "system": {
+    "total_products": 4,
+    "active_products": 4,
+    "low_stock_products": 3,
+    "expiring_products_30d": 1,
+    "total_categories": 2,
+    "total_users": 5,
+    "active_users": 5,
+    "total_notifications": 5,
+    "unread_notifications": 1,
+    "report_runs": 7,
+    "active_report_schedules": 2
+  },
+  "sales": {
+    "total_transactions": 2,
+    "total_units_sold": 3,
+    "total_revenue": 3.65,
+    "average_transaction": 1.83,
+    "first_sale_at": "2026-03-06 08:37",
+    "last_sale_at": "2026-03-06 15:58"
+  },
+  "ai_forecast": {
+    "model": "PROPHET",
+    "forecast_runs": 2,
+    "forecasted_products": 1,
+    "average_mae": 0.69,
+    "average_mape": 22.75,
+    "average_rmse": 0.96,
+    "last_forecast_at": "2026-03-14 08:02"
+  },
+  "reports": [
+    {
+      "report_type": "sales-daily",
+      "runs": 4
+    },
+    {
+      "report_type": "ai-reorder",
+      "runs": 1
+    },
+    {
+      "report_type": "category-contrib",
+      "runs": 1
+    },
+    {
+      "report_type": "sales-monthly",
+      "runs": 1
+    }
+  ],
+  "low_stock_sample": [
+    {
+      "product_name": "Hand Soap",
+      "quantity": 0,
+      "min_stock_level": 8
+    },
+    {
+      "product_name": "Instant Noodle",
+      "quantity": 5,
+      "min_stock_level": 12
+    },
+    {
+      "product_name": "UHT Milk",
+      "quantity": 6,
+      "min_stock_level": 10
+    }
+  ]
+}

@@ -18,11 +18,12 @@ const initialLots = [
   { product: "Instant Noodle", barcode: "8850002", lot: "NDL-C33", qty: 5, expiry: "2026-08-15", supplier: "Noodle Trading", store: "MAIN" }
 ];
 
+const STORE_CODE = "MAIN";
+
 export default function InventoryHealthPage() {
   const navigate = useNavigate();
   const fileInputRef = useRef(null);
 
-  const [store, setStore] = useState("MAIN");
   const [stockRows, setStockRows] = useState(initialStock);
   const [batchLots, setBatchLots] = useState(initialLots);
   const [windowDays, setWindowDays] = useState(30);
@@ -55,7 +56,7 @@ export default function InventoryHealthPage() {
     const end = new Date(now);
     end.setDate(now.getDate() + Number(windowDays));
     return batchLots
-      .filter((x) => x.store === store)
+      .filter((x) => x.store === STORE_CODE)
       .map((x) => {
         const exp = new Date(x.expiry);
         const diff = Math.ceil((exp.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
@@ -63,32 +64,32 @@ export default function InventoryHealthPage() {
       })
       .filter((x) => x.days_left <= Number(windowDays))
       .sort((a, b) => new Date(a.expiry) - new Date(b.expiry));
-  }, [batchLots, store, windowDays]);
+  }, [batchLots, windowDays]);
 
   const stockLowRows = useMemo(
-    () => stockRows.filter((x) => x.store === store && x.qty < x.min),
-    [stockRows, store]
+    () => stockRows.filter((x) => x.store === STORE_CODE && x.qty < x.min),
+    [stockRows]
   );
 
   const outOfStock = useMemo(
-    () => stockRows.filter((x) => x.store === store && x.qty <= 0).length,
-    [stockRows, store]
+    () => stockRows.filter((x) => x.store === STORE_CODE && x.qty <= 0).length,
+    [stockRows]
   );
 
   const inventoryTurnover = useMemo(() => {
-    const rows = stockRows.filter((x) => x.store === store);
+    const rows = stockRows.filter((x) => x.store === STORE_CODE);
     const cogs = rows.reduce((sum, x) => sum + Number(x.monthly_sales || 0) * Number(x.unit_cost || 0), 0);
     const avgInventory = rows.reduce((sum, x) => sum + Number(x.qty || 0) * Number(x.unit_cost || 0), 0) || 1;
     return Number((cogs / avgInventory).toFixed(2));
-  }, [stockRows, store]);
+  }, [stockRows]);
 
   const deadStock = useMemo(
-    () => stockRows.filter((x) => x.store === store && Number(x.monthly_sales || 0) <= 2).length,
-    [stockRows, store]
+    () => stockRows.filter((x) => x.store === STORE_CODE && Number(x.monthly_sales || 0) <= 2).length,
+    [stockRows]
   );
 
   const statusDist = useMemo(() => {
-    const rows = stockRows.filter((x) => x.store === store);
+    const rows = stockRows.filter((x) => x.store === STORE_CODE);
     const dist = { adequate: 0, low: 0, critical: 0, out: 0 };
     rows.forEach((r) => {
       if (r.qty <= 0) dist.out += 1;
@@ -97,7 +98,24 @@ export default function InventoryHealthPage() {
       else dist.adequate += 1;
     });
     return dist;
-  }, [stockRows, store]);
+  }, [stockRows]);
+
+  const supplierOptions = useMemo(
+    () => Array.from(new Set(
+      stockRows
+        .filter((x) => x.store === STORE_CODE)
+        .map((x) => String(x.supplier || "").trim())
+        .filter(Boolean)
+    )).sort((a, b) => a.localeCompare(b)),
+    [stockRows]
+  );
+
+  useEffect(() => {
+    if (!supplierOptions.length) return;
+    if (!supplierOptions.includes(receiveForm.supplier)) {
+      updateReceive("supplier", supplierOptions[0]);
+    }
+  }, [supplierOptions, receiveForm.supplier]);
 
   const updateReceive = (k, v) => setReceiveForm((prev) => ({ ...prev, [k]: v }));
   const updateAdjust = (k, v) => setAdjustForm((prev) => ({ ...prev, [k]: v }));
@@ -105,13 +123,13 @@ export default function InventoryHealthPage() {
   const loadInventory = async () => {
     const [prodRes, lotRes, movRes] = await Promise.all([
       apiFetch("/products"),
-      apiFetch(`/inventory/lots?store=${encodeURIComponent(store)}`),
+      apiFetch(`/inventory/lots?store=${encodeURIComponent(STORE_CODE)}`),
       apiFetch("/inventory/movements")
     ]);
     const products = Array.isArray(prodRes?.data) ? prodRes.data : [];
     setStockRows(
       products
-        .filter((p) => (p.store || "MAIN") === store)
+        .filter((p) => (p.store || "MAIN") === STORE_CODE)
         .map((p) => ({
           product: p.product_name,
           barcode: p.barcode,
@@ -155,16 +173,16 @@ export default function InventoryHealthPage() {
 
   useEffect(() => {
     loadInventory().catch(() => {});
-  }, [store]);
+  }, []);
 
   const pushMovement = (row) => {
-    setMovementLog((prev) => [{ id: Date.now(), time: new Date().toLocaleString(), store, ...row }, ...prev]);
+    setMovementLog((prev) => [{ id: Date.now(), time: new Date().toLocaleString(), store: STORE_CODE, ...row }, ...prev]);
   };
 
   const maybeTriggerAlert = (name, details) => {
     if (!alertTriggerOnAction) return;
     setAlertLog((prev) => [
-      { id: Date.now(), time: new Date().toLocaleString(), type: name, details, store },
+      { id: Date.now(), time: new Date().toLocaleString(), type: name, details, store: STORE_CODE },
       ...prev
     ]);
   };
@@ -174,7 +192,7 @@ export default function InventoryHealthPage() {
     setMsg("");
     const qty = Number(receiveForm.quantity || 0);
     if (qty < 1) return;
-    const target = stockRows.find((x) => x.barcode === receiveForm.barcode.trim() && x.store === store);
+    const target = stockRows.find((x) => x.barcode === receiveForm.barcode.trim() && x.store === STORE_CODE);
     if (!target) {
       setMsg(t("Barcode not found in current store."));
       return;
@@ -201,7 +219,7 @@ export default function InventoryHealthPage() {
 
     setReceiveForm({
       barcode: "",
-      supplier: "Noodle Trading",
+      supplier: supplierOptions[0] || "",
       quantity: 1,
       unit_cost: 0,
       batch_no: "",
@@ -216,7 +234,7 @@ export default function InventoryHealthPage() {
     setMsg("");
     const qty = Number(adjustForm.quantity || 0);
     if (qty < 1) return;
-    const target = stockRows.find((x) => x.barcode === adjustForm.barcode.trim() && x.store === store);
+    const target = stockRows.find((x) => x.barcode === adjustForm.barcode.trim() && x.store === STORE_CODE);
     if (!target) {
       setMsg(t("Barcode not found in current store."));
       return;
@@ -306,19 +324,21 @@ export default function InventoryHealthPage() {
     if (fileInputRef.current) fileInputRef.current.value = "";
   };
 
+  const refreshInventoryDashboard = async () => {
+    try {
+      await loadInventory();
+      setMsg(t("Inventory dashboard refreshed."));
+    } catch (err) {
+      setMsg(`${t("Refresh failed")}: ${err.message}`);
+    }
+  };
+
   return (
     <Layout title="Inventory Health">
       <section className="hero">
         <h2>{t("Inventory Health Center")}</h2>
         <p>{t("low stock and expiry priorities.")}</p>
         <div className="row mt-12">
-          <div>
-            <label>{t("Store")}</label>
-            <select value={store} onChange={(e) => setStore(e.target.value)}>
-              <option value="MAIN">{t("MAIN")}</option>
-              <option value="BRANCH_A">{t("BRANCH_A")}</option>
-            </select>
-          </div>
           <div>
             <label>{t("Window (Days)")}</label>
             <select value={windowDays} onChange={(e) => setWindowDays(Number(e.target.value))}>
@@ -336,7 +356,7 @@ export default function InventoryHealthPage() {
           </div>
           <div>
             <label>{t("Action")}</label>
-            <button type="button" onClick={() => setMsg(t("Inventory dashboard refreshed."))}>{t("Refresh")}</button>
+            <button type="button" onClick={refreshInventoryDashboard}>{t("Refresh")}</button>
           </div>
         </div>
       </section>
@@ -363,9 +383,9 @@ export default function InventoryHealthPage() {
               <div><label>{t("Barcode")}</label><input value={receiveForm.barcode} onChange={(e) => updateReceive("barcode", e.target.value)} required /></div>
               <div><label>{t("Supplier")}</label>
                 <select value={receiveForm.supplier} onChange={(e) => updateReceive("supplier", e.target.value)}>
-                  <option value="Noodle Trading">Noodle Trading</option>
-                  <option value="Dairy KH">Dairy KH</option>
-                  <option value="Clean Plus">Clean Plus</option>
+                  {supplierOptions.map((supplier) => (
+                    <option key={supplier} value={supplier}>{supplier}</option>
+                  ))}
                 </select>
               </div>
             </div>
@@ -440,45 +460,43 @@ export default function InventoryHealthPage() {
         />
       </section>
 
-      <section className="grid grid-2">
-        <article className="card">
-          <h3 className="card-title">{t("Low Stock Action Board")}</h3>
-          <DataTable
-            columns={[t("Product"), t("Barcode"), t("Category"), t("Supplier"), t("Qty"), t("Min"), t("Gap"), t("Action")]}
-            rows={stockLowRows.map((x) => [
-              x.product,
-              x.barcode,
-              x.category,
-              x.supplier,
-              x.qty,
-              x.min,
-              Math.max(0, x.min - x.qty),
-              <div key={`act-${x.barcode}`} className="action-row">
-                <button type="button" className="btn-inline" onClick={() => navigate("/products")}>{t("Open Product")}</button>
-                <button type="button" className="btn-inline secondary" onClick={() => navigate("/notifications")}>{t("Create Alert")}</button>
-              </div>
-            ])}
-            emptyText={t("No low stock")}
-          />
-        </article>
+      <section className="card">
+        <h3 className="card-title">{t("Low Stock Action Board")}</h3>
+        <DataTable
+          columns={[t("Product"), t("Barcode"), t("Category"), t("Supplier"), t("Qty"), t("Min"), t("Gap"), t("Action")]}
+          rows={stockLowRows.map((x) => [
+            x.product,
+            x.barcode,
+            x.category,
+            x.supplier,
+            x.qty,
+            x.min,
+            Math.max(0, x.min - x.qty),
+            <div key={`act-${x.barcode}`} className="action-row">
+              <button type="button" className="btn-inline" onClick={() => navigate("/products")}>{t("Open Product")}</button>
+              <button type="button" className="btn-inline secondary" onClick={() => navigate("/notifications")}>{t("Create Alert")}</button>
+            </div>
+          ])}
+          emptyText={t("No low stock")}
+        />
+      </section>
 
-        <article className="card">
-          <h3 className="card-title">{t("FEFO Batch Prioritization")}</h3>
-          <DataTable
-            columns={[t("Product"), t("Barcode"), t("Lot"), t("Qty"), t("Expiry"), t("Days Left"), t("Priority"), t("Action")]}
-            rows={expiryRows.map((x) => [
-              x.product,
-              x.barcode,
-              x.lot,
-              x.qty,
-              x.expiry,
-              x.days_left,
-              x.days_left <= 3 ? t("Critical") : x.days_left <= 7 ? t("High") : t("Normal"),
-              <button key={`${x.barcode}-${x.lot}`} type="button" className="btn-inline" onClick={() => navigate("/sales")}>{t("View Source")}</button>
-            ])}
-            emptyText={t("No expiry risk")}
-          />
-        </article>
+      <section className="card">
+        <h3 className="card-title">{t("FEFO Batch Prioritization")}</h3>
+        <DataTable
+          columns={[t("Product"), t("Barcode"), t("Lot"), t("Qty"), t("Expiry"), t("Days Left"), t("Priority"), t("Action")]}
+          rows={expiryRows.map((x) => [
+            x.product,
+            x.barcode,
+            x.lot,
+            x.qty,
+            x.expiry,
+            x.days_left,
+            x.days_left <= 3 ? t("Critical") : x.days_left <= 7 ? t("High") : t("Normal"),
+            <button key={`${x.barcode}-${x.lot}`} type="button" className="btn-inline" onClick={() => navigate("/sales")}>{t("View Source")}</button>
+          ])}
+          emptyText={t("No expiry risk")}
+        />
       </section>
 
       <section className="card">

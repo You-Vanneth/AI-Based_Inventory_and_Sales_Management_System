@@ -77,6 +77,40 @@ INSERT INTO stock_lots (product_id, lot_no, qty, expiry_date, supplier, store_co
 (3, 'MILK-B07', 4, '2026-03-18', 'Dairy KH', 'MAIN'),
 (2, 'NDL-C33', 5, '2026-08-15', 'Noodle Trading', 'MAIN');
 
+INSERT INTO sales
+(sale_code, sale_time, payment_method, customer_name, customer_phone, subtotal, discount_pct, discount_amount, tax_pct, tax_amount, total, khr_rate, total_khr, paid_amount, change_amount, sync_status, is_refund, created_by)
+VALUES
+('S20260213', DATE_SUB(NOW(), INTERVAL 28 DAY), 'CASH', 'Walk-in', '-', 3.90, 0, 0, 0, 0, 3.90, 4100, 15990, 4.00, 0.10, 'SYNCED', 0, 'Demo Admin'),
+('S20260215', DATE_SUB(NOW(), INTERVAL 26 DAY), 'BANK_TRANSFER', 'Walk-in', '-', 3.45, 0, 0, 0, 0, 3.45, 4100, 14145, 3.45, 0.00, 'SYNCED', 0, 'Demo Admin'),
+('S20260217', DATE_SUB(NOW(), INTERVAL 24 DAY), 'CASH', 'Walk-in', '-', 4.80, 0, 0, 0, 0, 4.80, 4100, 19680, 5.00, 0.20, 'SYNCED', 0, 'Demo Admin'),
+('S20260219', DATE_SUB(NOW(), INTERVAL 22 DAY), 'CASH', 'Walk-in', '-', 2.55, 0, 0, 0, 0, 2.55, 4100, 10455, 3.00, 0.45, 'SYNCED', 0, 'Demo Admin'),
+('S20260221', DATE_SUB(NOW(), INTERVAL 20 DAY), 'BANK_TRANSFER', 'Walk-in', '-', 5.10, 0, 0, 0, 0, 5.10, 4100, 20910, 5.10, 0.00, 'SYNCED', 0, 'Demo Admin'),
+('S20260223', DATE_SUB(NOW(), INTERVAL 18 DAY), 'CASH', 'Walk-in', '-', 3.60, 0, 0, 0, 0, 3.60, 4100, 14760, 4.00, 0.40, 'SYNCED', 0, 'Demo Admin'),
+('S20260225', DATE_SUB(NOW(), INTERVAL 16 DAY), 'CASH', 'Walk-in', '-', 4.20, 0, 0, 0, 0, 4.20, 4100, 17220, 5.00, 0.80, 'SYNCED', 0, 'Demo Admin'),
+('S20260227', DATE_SUB(NOW(), INTERVAL 14 DAY), 'BANK_TRANSFER', 'Walk-in', '-', 6.00, 0, 0, 0, 0, 6.00, 4100, 24600, 6.00, 0.00, 'SYNCED', 0, 'Demo Admin');
+
+INSERT INTO sale_items (sale_id, product_id, qty, unit_price, cost_price, line_total) VALUES
+(1, 1, 4, 0.75, 0.55, 3.00),
+(1, 2, 2, 0.45, 0.30, 0.90),
+(2, 1, 3, 0.75, 0.55, 2.25),
+(2, 3, 1, 1.20, 0.95, 1.20),
+(3, 1, 4, 0.75, 0.55, 3.00),
+(3, 2, 4, 0.45, 0.30, 1.80),
+(4, 2, 3, 0.45, 0.30, 1.35),
+(4, 4, 1, 1.40, 0.90, 1.40),
+(5, 1, 4, 0.75, 0.55, 3.00),
+(5, 3, 1, 1.20, 0.95, 1.20),
+(5, 2, 2, 0.45, 0.30, 0.90),
+(6, 2, 4, 0.45, 0.30, 1.80),
+(6, 1, 2, 0.75, 0.55, 1.50),
+(6, 4, 1, 1.40, 0.90, 1.40),
+(7, 1, 4, 0.75, 0.55, 3.00),
+(7, 2, 2, 0.45, 0.30, 0.90),
+(7, 3, 1, 1.20, 0.95, 1.20),
+(8, 1, 4, 0.75, 0.55, 3.00),
+(8, 2, 4, 0.45, 0.30, 1.80),
+(8, 3, 1, 1.20, 0.95, 1.20);
+
 INSERT INTO notification_rules (rule_code, severity, channel, active) VALUES
 ('LOW_STOCK', 'HIGH', 'IN_APP + EMAIL', 1),
 ('CRITICAL_STOCK', 'CRITICAL', 'IN_APP + EMAIL', 1),
@@ -99,13 +133,13 @@ VALUES
 INSERT INTO ai_model_performance
 (category_name, prophet_mape, arima_mape, prophet_mae, arima_mae, prophet_rmse, arima_rmse, selected_model)
 VALUES
-('Beverages', 12.80, 14.50, 3.10, 3.70, 4.80, 5.20, 'PROPHET'),
-('Snacks', 15.20, 13.90, 3.80, 3.50, 5.60, 5.00, 'ARIMA'),
-('Rice & Grains', 10.50, 11.20, 2.50, 2.80, 3.90, 4.20, 'PROPHET');
+('Beverages', 12.80, 0.00, 3.10, 0.00, 4.80, 0.00, 'PROPHET'),
+('Snacks', 15.20, 0.00, 3.80, 0.00, 5.60, 0.00, 'PROPHET'),
+('Rice & Grains', 10.50, 0.00, 2.50, 0.00, 3.90, 0.00, 'PROPHET');
 
 INSERT INTO ai_forecast_versions (version_code, product_id, model_name, horizon_days, mape, generated_at) VALUES
 ('FCAST-2026-03-01-01', 1, 'PROPHET', 30, 13.40, DATE_SUB(NOW(), INTERVAL 4 DAY)),
-('FCAST-2026-02-24-03', 1, 'ARIMA', 30, 14.10, DATE_SUB(NOW(), INTERVAL 10 DAY));
+('FCAST-2026-02-24-03', 2, 'PROPHET', 30, 14.10, DATE_SUB(NOW(), INTERVAL 10 DAY));
 
 INSERT INTO report_schedules (report_type, schedule_code, to_email, active, updated_by) VALUES
 ('sales-daily', 'DAILY_18_00', 'manager@example.com', 1, 'Demo Admin'),

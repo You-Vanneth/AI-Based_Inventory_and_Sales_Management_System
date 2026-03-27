@@ -2,45 +2,103 @@ import React from "react";
 import { useEffect, useMemo, useState } from "react";
 import Layout from "../components/Layout";
 import DataTable from "../components/DataTable";
+import Modal from "../components/Modal";
 import { apiFetch } from "../lib/api";
 import { t } from "../lib/i18n";
 
-const sample = {
-  "sales-daily": [
-    { date: "2026-03-01", txns: 42, units: 128, amount: 324.7, cogs: 228.1, gross_profit: 96.6, margin_pct: 29.75, cash: 192.3, card: 81.2, ewallet: 51.2 },
-    { date: "2026-03-02", txns: 38, units: 110, amount: 291.5, cogs: 204.8, gross_profit: 86.7, margin_pct: 29.74, cash: 167.9, card: 71.2, ewallet: 52.4 }
-  ],
-  "sales-monthly": [
-    { period: "2026-01", txns: 340, units: 940, amount: 890.4, cogs: 621.4, gross_profit: 269.0, margin_pct: 30.21, growth_pct: 7.5 },
-    { period: "2026-02", txns: 291, units: 812, amount: 812.15, cogs: 573.8, gross_profit: 238.35, margin_pct: 29.35, growth_pct: -8.79 }
-  ],
-  "sales-quarterly": [
-    { period: "2026-Q1", txns: 631, units: 1752, amount: 1702.55, cogs: 1195.2, gross_profit: 507.35, margin_pct: 29.8, growth_pct: 6.3 }
-  ],
-  "sales-annual": [
-    { period: "2026", txns: 631, units: 1752, amount: 1702.55, cogs: 1195.2, gross_profit: 507.35, margin_pct: 29.8, growth_pct: 12.4 }
-  ],
-  "stock-low": [
-    { product: "Instant Noodle", barcode: "8850002", qty: 5, min: 12, category: "Food", supplier: "Noodle Trading", value_at_risk: 2.25 }
-  ],
-  "stock-expiry": [
-    { product: "UHT Milk", barcode: "8850003", qty: 8, expiry: "2026-03-12", days_left: 7, category: "Dairy", value_at_risk: 9.6 }
-  ],
-  "ai-reorder": [
-    { product: "Instant Noodle", avg_day: 3.2, lead: 7, reorder_level: 26, stock: 5, suggest_qty: 21, selected_model: "ARIMA", confidence: "80-95%" }
-  ],
-  "category-contrib": [
-    { category: "Drink", revenue: 388.2, contribution_pct: 44.9 },
-    { category: "Food", revenue: 312.6, contribution_pct: 36.2 },
-    { category: "Dairy", revenue: 102.4, contribution_pct: 11.8 },
-    { category: "Household", revenue: 61.1, contribution_pct: 7.1 }
-  ],
-  "payment-method": [
-    { method: "CASH", amount: 460.2, pct: 53.2 },
-    { method: "CARD", amount: 220.6, pct: 25.5 },
-    { method: "E_WALLET", amount: 184.8, pct: 21.3 }
-  ]
+const SALES_GROUP_TO_TYPE = {
+  DAY: "sales-daily",
+  MONTH: "sales-monthly",
+  QUARTER: "sales-quarterly",
+  YEAR: "sales-annual"
 };
+
+function deriveReportControls(type) {
+  if (type.startsWith("sales-")) {
+    if (type === "sales-monthly") return { category: "sales", grouping: "MONTH" };
+    if (type === "sales-quarterly") return { category: "sales", grouping: "QUARTER" };
+    if (type === "sales-annual") return { category: "sales", grouping: "YEAR" };
+    return { category: "sales", grouping: "DAY" };
+  }
+  if (type === "stock-low") return { category: "stock-low", grouping: "DAY" };
+  if (type === "stock-expiry") return { category: "stock-expiry", grouping: "DAY" };
+  if (type === "ai-reorder") return { category: "ai-reorder", grouping: "DAY" };
+  if (type === "category-contrib") return { category: "category-contrib", grouping: "DAY" };
+  if (type === "payment-method") return { category: "payment-method", grouping: "DAY" };
+  return { category: "sales", grouping: "DAY" };
+}
+
+function resolveReportType(category, grouping) {
+  if (category === "sales") return SALES_GROUP_TO_TYPE[grouping] || "sales-daily";
+  return category;
+}
+
+function getGroupingLabel(grouping) {
+  if (grouping === "MONTH") return "Month";
+  if (grouping === "QUARTER") return "Quarter";
+  if (grouping === "YEAR") return "Year";
+  return "Day";
+}
+
+function getCategoryLabel(category) {
+  if (category === "stock-low") return "Stock Low";
+  if (category === "stock-expiry") return "Stock Expiry";
+  if (category === "ai-reorder") return "AI Reorder";
+  if (category === "category-contrib") return "Category Contribution";
+  if (category === "payment-method") return "Payment Method";
+  return "Sales";
+}
+
+function parseDateParts(value) {
+  const match = String(value || "").match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) return null;
+  return {
+    year: Number(match[1]),
+    month: Number(match[2]),
+    day: Number(match[3])
+  };
+}
+
+function formatDateParts(year, month, day) {
+  return `${String(year).padStart(4, "0")}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+}
+
+function getLastDayOfMonth(year, month) {
+  return new Date(Date.UTC(year, month, 0)).getUTCDate();
+}
+
+function normalizeSalesDateRange(grouping, from, to) {
+  if (!from && !to) return { from: "", to: "" };
+  const baseFrom = parseDateParts(from || to);
+  const baseTo = parseDateParts(to || from);
+  if (!baseFrom || !baseTo) return { from, to };
+
+  if (grouping === "MONTH") {
+    return {
+      from: formatDateParts(baseFrom.year, baseFrom.month, 1),
+      to: formatDateParts(baseTo.year, baseTo.month, getLastDayOfMonth(baseTo.year, baseTo.month))
+    };
+  }
+
+  if (grouping === "QUARTER") {
+    const fromQuarterStartMonth = Math.floor((baseFrom.month - 1) / 3) * 3 + 1;
+    const toQuarterStartMonth = Math.floor((baseTo.month - 1) / 3) * 3 + 1;
+    const toQuarterEndMonth = toQuarterStartMonth + 2;
+    return {
+      from: formatDateParts(baseFrom.year, fromQuarterStartMonth, 1),
+      to: formatDateParts(baseTo.year, toQuarterEndMonth, getLastDayOfMonth(baseTo.year, toQuarterEndMonth))
+    };
+  }
+
+  if (grouping === "YEAR") {
+    return {
+      from: formatDateParts(baseFrom.year, 1, 1),
+      to: formatDateParts(baseTo.year, 12, 31)
+    };
+  }
+
+  return { from, to };
+}
 
 export default function ReportsPage() {
   const [type, setType] = useState("sales-daily");
@@ -50,11 +108,34 @@ export default function ReportsPage() {
   const [exportFormat, setExportFormat] = useState("PDF");
   const [schedule, setSchedule] = useState("NONE");
   const [toEmail, setToEmail] = useState("");
-  const [generatedAt, setGeneratedAt] = useState(null);
-  const [generatedBy] = useState(t("Demo Admin"));
+  const [runMeta, setRunMeta] = useState(null);
   const [history, setHistory] = useState([]);
   const [msg, setMsg] = useState("");
-  const [rows, setRows] = useState(sample[type] || []);
+  const [msgType, setMsgType] = useState("ok");
+  const [rows, setRows] = useState([]);
+  const [comparison, setComparison] = useState(null);
+  const [detailRow, setDetailRow] = useState(null);
+  const reportControls = useMemo(() => deriveReportControls(type), [type]);
+  const isSalesReport = reportControls.category === "sales";
+  const groupingLabel = useMemo(() => getGroupingLabel(reportControls.grouping), [reportControls.grouping]);
+  const categoryLabel = useMemo(() => getCategoryLabel(reportControls.category), [reportControls.category]);
+  const selectedPeriodLabel = `${fromDate || "-"} ${t("to")} ${toDate || "-"}`;
+  const effectiveRange = useMemo(
+    () => (isSalesReport ? normalizeSalesDateRange(reportControls.grouping, fromDate, toDate) : { from: fromDate, to: toDate }),
+    [isSalesReport, reportControls.grouping, fromDate, toDate]
+  );
+  const effectivePeriodLabel = `${effectiveRange.from || "-"} ${t("to")} ${effectiveRange.to || "-"}`;
+
+  const parseHistoryFilter = (value) => {
+    const text = String(value || "").trim();
+    const match = text.match(/^(.+?)\s+to\s+(.+)$/i);
+    if (!match) return { from: "", to: "" };
+    return {
+      from: match[1] === "-" ? "" : match[1],
+      to: match[2] === "-" ? "" : match[2]
+    };
+  };
+
   useEffect(() => {
     apiFetch("/reports/history")
       .then((res) => setHistory(Array.isArray(res?.data) ? res.data : []))
@@ -68,7 +149,12 @@ export default function ReportsPage() {
       columns: [...keys, t("Action")],
       tableRows: rows.map((r) => [
         ...keys.map((k) => String(r[k] ?? "-")),
-        <button key={`${type}-${String(r[keys[0]])}`} type="button" className="btn-inline">
+        <button
+          key={`${type}-${String(r[keys[0]])}`}
+          type="button"
+          className="btn-inline"
+          onClick={() => setDetailRow(r)}
+        >
           {t("Drill Down")}
         </button>
       ])
@@ -76,9 +162,8 @@ export default function ReportsPage() {
   }, [rows, type]);
 
   const summary = useMemo(() => {
-    const salesRows = rows.length ? rows : sample["sales-daily"];
-    const revenue = salesRows.reduce((sum, r) => sum + Number(r.amount || 0), 0);
-    const cogs = salesRows.reduce((sum, r) => sum + Number(r.cogs || 0), 0);
+    const revenue = rows.reduce((sum, r) => sum + Number(r.amount || 0), 0);
+    const cogs = rows.reduce((sum, r) => sum + Number(r.cogs || 0), 0);
     const gross = revenue - cogs;
     const margin = revenue ? (gross / revenue) * 100 : 0;
     return {
@@ -89,31 +174,83 @@ export default function ReportsPage() {
     };
   }, [rows]);
 
-  const run = async () => {
+  const runReport = async ({ nextType = type, nextFrom = fromDate, nextTo = toDate, nextComparePrev = comparePrev } = {}) => {
     try {
+      const nextControls = deriveReportControls(nextType);
+      const normalizedRange = nextControls.category === "sales"
+        ? normalizeSalesDateRange(nextControls.grouping, nextFrom, nextTo)
+        : { from: nextFrom, to: nextTo };
       const params = new URLSearchParams({
-        type,
-        from: fromDate,
-        to: toDate,
-        compare_prev: String(comparePrev)
+        type: nextType,
+        from: normalizedRange.from,
+        to: normalizedRange.to,
+        compare_prev: String(nextComparePrev)
       });
       const res = await apiFetch(`/reports/run?${params.toString()}`);
-      setRows(Array.isArray(res?.data?.rows) ? res.data.rows : []);
-      const at = new Date(res?.data?.meta?.generated_at || Date.now());
-      setGeneratedAt(at);
-      setMsg(`${t("Report generated")}: ${type}${fromDate || toDate ? ` (${fromDate || "-"} ${t("to")} ${toDate || "-"})` : ""}`);
+      const nextRows = Array.isArray(res?.data?.rows) ? res.data.rows : [];
+      const nextMeta = res?.data?.meta || null;
+      setRows(nextRows);
+      setComparison(nextMeta?.comparison || null);
+      setRunMeta(nextMeta);
+      setMsgType(nextRows.length ? "ok" : "error");
+      setMsg(
+        nextRows.length
+          ? `${t("Report generated")}: ${nextType}${normalizedRange.from || normalizedRange.to ? ` (${normalizedRange.from || "-"} ${t("to")} ${normalizedRange.to || "-"})` : ""}`
+          : t("No report rows found for the selected filters.")
+      );
       const historyRes = await apiFetch("/reports/history");
       setHistory(Array.isArray(historyRes?.data) ? historyRes.data : []);
     } catch (err) {
+      setRows([]);
+      setComparison(null);
+      setRunMeta(null);
+      setMsgType("error");
       setMsg(`${t("Run failed")}: ${err.message}`);
     }
   };
+
+  const run = async () => {
+    await runReport();
+  };
+
+  const openHistoryRun = async (entry) => {
+    const nextType = String(entry.type || entry.report_type || type);
+    const parsedFilter = parseHistoryFilter(entry.filter || entry.filter_text || "");
+    const nextComparePrev = Boolean(entry.compare_prev || entry.compare === "YES");
+    setType(nextType);
+    setFromDate(parsedFilter.from);
+    setToDate(parsedFilter.to);
+    setComparePrev(nextComparePrev);
+    await runReport({
+      nextType,
+      nextFrom: parsedFilter.from,
+      nextTo: parsedFilter.to,
+      nextComparePrev
+    });
+    setMsgType("ok");
+    setMsg(t("Report reopened from history."));
+  };
+
+  useEffect(() => {
+    setRows([]);
+    setComparison(null);
+    setRunMeta(null);
+    setDetailRow(null);
+    setMsg("");
+    setMsgType("ok");
+  }, [type]);
 
   const exportReport = async () => {
     try {
       const res = await apiFetch("/reports/export", {
         method: "POST",
-        body: JSON.stringify({ type, format: exportFormat })
+        body: JSON.stringify({
+          type,
+          format: exportFormat,
+          from: fromDate,
+          to: toDate,
+          compare_prev: comparePrev
+        })
       });
       const file = res?.data || {};
       const resolvedFormat = String(file.format || exportFormat).toUpperCase();
@@ -140,14 +277,17 @@ export default function ReportsPage() {
       a.download = file.filename || `report-${type}.${resolvedFormat.toLowerCase()}`;
       a.click();
       URL.revokeObjectURL(url);
+      setMsgType("ok");
       setMsg(`${t("Export prepared in")} ${exportFormat} ${t("format.")}`);
     } catch (err) {
+      setMsgType("error");
       setMsg(`${t("Export failed")}: ${err.message}`);
     }
   };
 
   const saveSchedule = async () => {
     if (schedule !== "NONE" && !toEmail.trim()) {
+      setMsgType("error");
       setMsg(t("Please provide recipient email for scheduled reports."));
       return;
     }
@@ -156,8 +296,10 @@ export default function ReportsPage() {
         method: "POST",
         body: JSON.stringify({ type, schedule, to_email: toEmail })
       });
+      setMsgType("ok");
       setMsg(schedule === "NONE" ? t("Schedule disabled.") : `${t("Report schedule saved")}: ${schedule} ${t("to")} ${toEmail}.`);
     } catch (err) {
+      setMsgType("error");
       setMsg(`${t("Save schedule failed")}: ${err.message}`);
     }
   };
@@ -170,21 +312,65 @@ export default function ReportsPage() {
       </section>
 
       <section className="grid grid-4 reports-kpis">
-        <article className="kpi"><div className="kpi-label">{t("Revenue")}</div><div className="kpi-value">${summary.revenue.toFixed(2)}</div></article>
-        <article className="kpi"><div className="kpi-label">{t("COGS")}</div><div className="kpi-value">${summary.cogs.toFixed(2)}</div></article>
-        <article className="kpi"><div className="kpi-label">{t("Gross Profit")}</div><div className="kpi-value">${summary.gross.toFixed(2)}</div></article>
-        <article className="kpi"><div className="kpi-label">{t("Margin")}</div><div className="kpi-value">{summary.margin.toFixed(2)}%</div></article>
+        <article className="kpi"><div className="kpi-label">{t("Report Category")}</div><div className="kpi-value">{t(categoryLabel)}</div></article>
+        <article className="kpi"><div className="kpi-label">{t("Grouped By")}</div><div className="kpi-value">{isSalesReport ? t(groupingLabel) : "-"}</div></article>
+        <article className="kpi"><div className="kpi-label">{t("Rows Returned")}</div><div className="kpi-value">{rows.length}</div></article>
+        <article className="kpi"><div className="kpi-label">{t("Selected Period")}</div><div className="kpi-value">{effectivePeriodLabel}</div></article>
       </section>
+
+      {isSalesReport ? (
+        <section className="grid grid-4 reports-kpis">
+          <article className="kpi"><div className="kpi-label">{t("Total Revenue")}</div><div className="kpi-value">${summary.revenue.toFixed(2)}</div></article>
+          <article className="kpi"><div className="kpi-label">{t("Total COGS")}</div><div className="kpi-value">${summary.cogs.toFixed(2)}</div></article>
+          <article className="kpi"><div className="kpi-label">{t("Total Gross Profit")}</div><div className="kpi-value">${summary.gross.toFixed(2)}</div></article>
+          <article className="kpi"><div className="kpi-label">{t("Total Margin")}</div><div className="kpi-value">{summary.margin.toFixed(2)}%</div></article>
+        </section>
+      ) : null}
+
+      <p className="muted" style={{ marginTop: 12 }}>
+        {isSalesReport
+          ? t("Changing Group By also expands the sales date range to full month, quarter or year boundaries so the result is easier to compare.")
+          : t("The cards above show the selected report, returned rows and selected period.")}
+      </p>
+
+      {comparePrev && comparison ? (
+        <section className="card">
+          <div className="card-head">
+            <h3 className="card-title">{t("Comparison Summary")}</h3>
+          </div>
+          <div className="grid grid-4 reports-kpis">
+            <article className="kpi">
+              <div className="kpi-label">{t(comparison.current?.primary_label || "Current")}</div>
+              <div className="kpi-value">{comparison.current?.primary_value ?? 0}</div>
+            </article>
+            <article className="kpi">
+              <div className="kpi-label">{t("Previous Period")}</div>
+              <div className="kpi-value">{comparison.previous?.primary_value ?? 0}</div>
+            </article>
+            <article className="kpi">
+              <div className="kpi-label">{t("Delta")}</div>
+              <div className="kpi-value">{comparison.delta ?? 0}</div>
+            </article>
+            <article className="kpi">
+              <div className="kpi-label">{t("Delta %")}</div>
+              <div className="kpi-value">{comparison.delta_pct == null ? "-" : `${comparison.delta_pct}%`}</div>
+            </article>
+          </div>
+          <p className="muted" style={{ marginTop: 12 }}>
+            {t("Previous period")}: {comparison.previous_from} {t("to")} {comparison.previous_to}
+          </p>
+        </section>
+      ) : null}
 
       <section className="card">
         <div className="row reports-toolbar">
           <div>
-            <label>{t("Report Type")}</label>
-            <select value={type} onChange={(e) => setType(e.target.value)}>
-              <option value="sales-daily">{t("Sales Daily")}</option>
-              <option value="sales-monthly">{t("Sales Monthly")}</option>
-              <option value="sales-quarterly">{t("Sales Quarterly")}</option>
-              <option value="sales-annual">{t("Sales Annual")}</option>
+            <label>{t("Report Category")}</label>
+            <select
+              value={reportControls.category}
+              onChange={(e) => setType(resolveReportType(e.target.value, reportControls.grouping))}
+            >
+              <option value="sales">{t("Sales")}</option>
               <option value="stock-low">{t("Stock Low")}</option>
               <option value="stock-expiry">{t("Stock Expiry")}</option>
               <option value="ai-reorder">{t("AI Reorder")}</option>
@@ -192,6 +378,20 @@ export default function ReportsPage() {
               <option value="payment-method">{t("Payment Method")}</option>
             </select>
           </div>
+          {isSalesReport ? (
+            <div>
+              <label>{t("Group By")}</label>
+              <select
+                value={reportControls.grouping}
+                onChange={(e) => setType(resolveReportType(reportControls.category, e.target.value))}
+              >
+                <option value="DAY">{t("Day")}</option>
+                <option value="MONTH">{t("Month")}</option>
+                <option value="QUARTER">{t("Quarter")}</option>
+                <option value="YEAR">{t("Year")}</option>
+              </select>
+            </div>
+          ) : null}
           <div>
             <label>{t("Date From")}</label>
             <input type="date" value={fromDate} onChange={(e) => setFromDate(e.target.value)} />
@@ -212,6 +412,11 @@ export default function ReportsPage() {
             <button type="button" onClick={run}>{t("Run Report")}</button>
           </div>
         </div>
+        <p className="muted" style={{ marginTop: 12 }}>
+          {isSalesReport
+            ? `${t("Date From and Date To act as anchors. Group By Month, Quarter and Year will expand to full period boundaries before running the report.")}`
+            : t("Use date filters to limit the selected report to a specific period.")}
+        </p>
       </section>
 
       <section className="card">
@@ -266,7 +471,8 @@ export default function ReportsPage() {
         <div className="card-head">
           <h3 className="card-title">{t("Report Result")}</h3>
         </div>
-        <DataTable className="reports-table" columns={columns} rows={tableRows} emptyText="No data" />
+        {!rows.length && runMeta ? <div className="msg error">{t("No report rows found for the selected filters.")}</div> : null}
+        <DataTable className="reports-table" columns={columns} rows={tableRows} emptyText={t("Run a report to see results")} />
       </section>
 
       <section className="card">
@@ -274,19 +480,19 @@ export default function ReportsPage() {
         <div className="grid grid-2">
           <div className="stock-product-preview">
             <strong>{t("Generated By")}</strong>
-            <span>{generatedBy}</span>
+            <span>{runMeta?.generated_by || "-"}</span>
           </div>
           <div className="stock-product-preview">
             <strong>{t("Generated At")}</strong>
-            <span>{generatedAt ? generatedAt.toLocaleString() : "-"}</span>
+            <span>{runMeta?.generated_at ? new Date(runMeta.generated_at).toLocaleString() : "-"}</span>
           </div>
           <div className="stock-product-preview">
             <strong>{t("Filters")}</strong>
-            <span>{fromDate || "-"} to {toDate || "-"}</span>
+            <span>{runMeta?.filter || `${fromDate || "-"} ${t("to")} ${toDate || "-"}`}</span>
           </div>
           <div className="stock-product-preview">
             <strong>{t("Comparison Enabled")}</strong>
-            <span>{comparePrev ? t("YES") : t("NO")}</span>
+            <span>{(runMeta?.compare_prev ?? comparePrev) ? t("YES") : t("NO")}</span>
           </div>
         </div>
       </section>
@@ -302,13 +508,36 @@ export default function ReportsPage() {
             h.by || h.generated_by || "-",
             h.filter || h.filter_text || "-",
             t(h.compare || (h.compare_prev ? "YES" : "NO")),
-            <button key={h.id} type="button" className="btn-inline">{t("Open")}</button>
+            <button key={h.id} type="button" className="btn-inline" onClick={() => openHistoryRun(h)}>{t("Open")}</button>
           ])}
           emptyText={t("No report history yet")}
         />
       </section>
 
-      {msg ? <div className="msg ok">{msg}</div> : null}
+      <Modal
+        open={Boolean(detailRow)}
+        onClose={() => setDetailRow(null)}
+        title={t("Report Row Detail")}
+        size="wide"
+      >
+        {detailRow ? (
+          <div className="grid">
+            <div className="msg ok">
+              <strong>{t("Selected report row details.")}</strong>
+            </div>
+            <div className="grid grid-2">
+              {Object.entries(detailRow).map(([key, value]) => (
+                <div key={key} className="stock-product-preview">
+                  <strong>{t(key)}</strong>
+                  <span>{String(value ?? "-")}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        ) : null}
+      </Modal>
+
+      {msg ? <div className={`msg ${msgType === "error" ? "error" : "ok"}`}>{msg}</div> : null}
     </Layout>
   );
 }

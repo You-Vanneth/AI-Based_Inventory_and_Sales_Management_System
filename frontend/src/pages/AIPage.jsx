@@ -5,88 +5,129 @@ import DataTable from "../components/DataTable";
 import { apiFetch } from "../lib/api";
 import { t } from "../lib/i18n";
 
-const reorderRows = [
-  { product: "Instant Noodle", avg_day: 3.2, lead: 7, reorder: 26, stock: 5, suggest: 21, reorder_date: "2026-03-08", urgency: "HIGH" },
-  { product: "UHT Milk", avg_day: 1.4, lead: 5, reorder: 10, stock: 8, suggest: 2, reorder_date: "2026-03-10", urgency: "MEDIUM" }
-];
-
-const modelRows = [
-  { category: "Beverages", prophet_mape: 12.8, arima_mape: 14.5, prophet_mae: 3.1, arima_mae: 3.7, prophet_rmse: 4.8, arima_rmse: 5.2, selected: "PROPHET" },
-  { category: "Snacks", prophet_mape: 15.2, arima_mape: 13.9, prophet_mae: 3.8, arima_mae: 3.5, prophet_rmse: 5.6, arima_rmse: 5.0, selected: "ARIMA" },
-  { category: "Rice & Grains", prophet_mape: 10.5, arima_mape: 11.2, prophet_mae: 2.5, arima_mae: 2.8, prophet_rmse: 3.9, arima_rmse: 4.2, selected: "PROPHET" }
-];
-
-const versionSeed = [
-  { version: "FCAST-2026-03-01-01", product: 1, model: "PROPHET", generated_at: "2026-03-01 09:00", horizon: 30, mape: 13.4 },
-  { version: "FCAST-2026-02-24-03", product: 1, model: "ARIMA", generated_at: "2026-02-24 09:00", horizon: 30, mape: 14.1 }
-];
+const emptyForecast = {
+  model: "PROPHET",
+  avg: 0,
+  total: 0,
+  reorder: 0,
+  suggest_qty: 0,
+  safety_stock: 0,
+  ci_low: 0,
+  ci_high: 0,
+  reorder_date: "-",
+  urgency: "LOW",
+  series: {
+    history: [],
+    forecast: []
+  }
+};
 
 export default function AIPage() {
-  const [productId, setProductId] = useState(1);
+  const [products, setProducts] = useState([]);
+  const [productId, setProductId] = useState("");
   const [days, setDays] = useState(30);
   const [lead, setLead] = useState(7);
-  const [schedule, setSchedule] = useState("WEEKLY");
-  const [ran, setRan] = useState(false);
   const [history, setHistory] = useState([]);
-  const [versions, setVersions] = useState(versionSeed);
-  const [modelData, setModelData] = useState(modelRows);
-  const [reorderData, setReorderData] = useState(reorderRows);
+  const [versions, setVersions] = useState([]);
+  const [modelData, setModelData] = useState([]);
+  const [reorderData, setReorderData] = useState([]);
+  const [forecast, setForecast] = useState(emptyForecast);
+  const [scheduler, setScheduler] = useState(null);
   const [bulkRunning, setBulkRunning] = useState(false);
   const [bulkProgress, setBulkProgress] = useState(0);
   const [alertAuto, setAlertAuto] = useState(true);
   const [msg, setMsg] = useState("");
+  const [hasForecastRun, setHasForecastRun] = useState(false);
 
-  const forecast = useMemo(() => {
-    const avg = 2.7;
-    const total = Number((avg * Number(days || 0)).toFixed(2));
-    const reorder = Number((avg * Number(lead || 0) + 5).toFixed(2));
-    const model = Number(productId) % 2 === 0 ? "ARIMA" : "PROPHET";
-    return { avg, total, reorder, model, ciLow: Number((total * 0.85).toFixed(2)), ciHigh: Number((total * 1.15).toFixed(2)) };
-  }, [days, lead, productId]);
+  const loadAiData = async () => {
+    const [productsRes, performanceRes, versionsRes, historyRes, schedulerRes] = await Promise.all([
+      apiFetch("/products"),
+      apiFetch("/ai/model-performance"),
+      apiFetch("/ai/forecast/versions"),
+      apiFetch("/ai/forecast/history"),
+      apiFetch("/ai/scheduler/status")
+    ]);
+
+    const nextProducts = Array.isArray(productsRes?.data) ? productsRes.data : [];
+    setProducts(nextProducts);
+    setModelData(Array.isArray(performanceRes?.data) ? performanceRes.data : []);
+    setVersions(Array.isArray(versionsRes?.data) ? versionsRes.data : []);
+    setHistory(Array.isArray(historyRes?.data) ? historyRes.data : []);
+    setScheduler(schedulerRes?.data || null);
+    if (!productId && nextProducts[0]?.id) {
+      setProductId(String(nextProducts[0].id));
+    }
+  };
 
   useEffect(() => {
-    apiFetch("/ai/model-performance")
-      .then((res) => setModelData(Array.isArray(res?.data) ? res.data : modelRows))
-      .catch(() => {});
-    apiFetch("/ai/forecast/versions")
-      .then((res) => setVersions(Array.isArray(res?.data) ? res.data : versionSeed))
-      .catch(() => {});
-    apiFetch("/ai/forecast/history")
-      .then((res) => setHistory(Array.isArray(res?.data) ? res.data : []))
-      .catch(() => {});
+    loadAiData().catch(() => {});
   }, []);
 
   const metricSummary = useMemo(() => {
-    const src = modelData.length ? modelData : modelRows;
-    const avgMape = src.reduce((sum, x) => sum + Math.min(x.prophet_mape, x.arima_mape), 0) / src.length;
-    const avgMae = src.reduce((sum, x) => sum + Math.min(x.prophet_mae, x.arima_mae), 0) / src.length;
-    const avgRmse = src.reduce((sum, x) => sum + Math.min(x.prophet_rmse, x.arima_rmse), 0) / src.length;
+    if (!modelData.length) {
+      return {
+        mae: 0,
+        mape: 0,
+        rmse: 0
+      };
+    }
+    const divisor = modelData.length || 1;
+    const mae = modelData.reduce((sum, item) => sum + Number(item.mae || 0), 0) / divisor;
+    const mape = modelData.reduce((sum, item) => sum + Number(item.mape || 0), 0) / divisor;
+    const rmse = modelData.reduce((sum, item) => sum + Number(item.rmse || 0), 0) / divisor;
     return {
-      mape: Number(avgMape.toFixed(2)),
-      mae: Number(avgMae.toFixed(2)),
-      rmse: Number(avgRmse.toFixed(2))
+      mae: Number(mae.toFixed(2)),
+      mape: Number(mape.toFixed(2)),
+      rmse: Number(rmse.toFixed(2))
     };
   }, [modelData]);
+
+  const confidencePercent = useMemo(() => {
+    if (!forecast.total) return 0;
+    const spread = Math.abs(Number(forecast.ci_high || 0) - Number(forecast.ci_low || 0));
+    const pct = Math.max(0, 100 - (spread / Number(forecast.total || 1)) * 100);
+    return Number(pct.toFixed(1));
+  }, [forecast]);
+
+  const chartRows = useMemo(() => {
+    const historyTail = Array.isArray(forecast.series?.history) ? forecast.series.history.slice(-6) : [];
+    const future = Array.isArray(forecast.series?.forecast) ? forecast.series.forecast.slice(0, 6) : [];
+    return [
+      ...historyTail.map((item) => ({
+        label: item.ds,
+        actual: Number(item.y || 0),
+        predicted: Number(item.y || 0),
+        mode: "history"
+      })),
+      ...future.map((item) => ({
+        label: item.ds,
+        actual: "-",
+        predicted: Number(item.yhat || 0),
+        mode: "forecast"
+      }))
+    ];
+  }, [forecast]);
+
+  const selectedProduct = useMemo(
+    () => products.find((item) => String(item.id) === String(productId)) || null,
+    [products, productId]
+  );
 
   const runForecast = async () => {
     try {
       const res = await apiFetch("/ai/forecast/run", {
         method: "POST",
         body: JSON.stringify({
-          product_id: Number(productId),
+          product_id: Number(productId || 0),
           days: Number(days),
           lead: Number(lead),
           alert_auto: alertAuto
         })
       });
-      setRan(true);
-      if (Array.isArray(res?.data?.reorder_recommendations)) {
-        setReorderData(res.data.reorder_recommendations);
-      }
-      const h = await apiFetch("/ai/forecast/history");
-      setHistory(Array.isArray(h?.data) ? h.data : []);
-      const v = await apiFetch("/ai/forecast/versions");
-      setVersions(Array.isArray(v?.data) ? v.data : []);
+      setForecast(res?.data?.forecast || emptyForecast);
+      setReorderData(Array.isArray(res?.data?.reorder_recommendations) ? res.data.reorder_recommendations : []);
+      setHasForecastRun(true);
+      await loadAiData();
       setMsg(alertAuto ? t("Forecast completed and restock alert candidates generated.") : t("Forecast completed."));
     } catch (err) {
       setMsg(`${t("Run failed")}: ${err.message}`);
@@ -100,9 +141,15 @@ export default function AIPage() {
       setBulkProgress(20);
       const res = await apiFetch("/ai/forecast/bulk-run", {
         method: "POST",
-        body: JSON.stringify({ alert_auto: alertAuto })
+        body: JSON.stringify({
+          days: Number(days),
+          lead: Number(lead),
+          alert_auto: alertAuto
+        })
       });
       setBulkProgress(Number(res?.data?.progress ?? 100));
+      setHasForecastRun(true);
+      await loadAiData();
       setMsg(t("Bulk forecast completed for all active products."));
     } catch (err) {
       setMsg(`${t("Bulk run failed")}: ${err.message}`);
@@ -111,150 +158,166 @@ export default function AIPage() {
     }
   };
 
-  const confidencePercent = useMemo(() => {
-    if (!forecast.total) return 0;
-    const spread = Math.abs(forecast.ciHigh - forecast.ciLow);
-    const pct = Math.max(0, 100 - (spread / forecast.total) * 100);
-    return Number(pct.toFixed(1));
-  }, [forecast]);
-
   return (
     <Layout title="AI Forecast">
       <section className="hero">
         <h2>{t("AI Forecast Console")}</h2>
-        <p>{t("Product-level forecasting, model selection, and replenishment intelligence.")}</p>
+        <p>{t("Prophet-based demand forecasting, replenishment planning, and stock intelligence.")}</p>
       </section>
 
       <section className="card">
         <h3 className="card-title">{t("Forecast Controls")}</h3>
         <div className="row">
-          <div><label>{t("Product ID")}</label><input type="number" min="1" value={productId} onChange={(e) => setProductId(e.target.value)} /></div>
-          <div><label>{t("Horizon (Days)")}</label><input type="number" min="1" value={days} onChange={(e) => setDays(e.target.value)} /></div>
-          <div><label>{t("Lead Time")}</label><input type="number" min="1" value={lead} onChange={(e) => setLead(e.target.value)} /></div>
           <div>
-            <label>{t("Schedule")}</label>
-            <select value={schedule} onChange={(e) => setSchedule(e.target.value)}>
-              <option value="DAILY">{t("DAILY")}</option>
-              <option value="WEEKLY">{t("WEEKLY")}</option>
+            <label>{t("Product")}</label>
+            <select value={productId} onChange={(e) => setProductId(e.target.value)}>
+              {products.map((item) => (
+                <option key={item.id} value={item.id}>
+                  {item.product_name}
+                </option>
+              ))}
             </select>
           </div>
-          <div><label>{t("Action")}</label><button type="button" onClick={runForecast}>{t("Run Forecast")}</button></div>
+          <div>
+            <label>{t("Horizon (Days)")}</label>
+            <input type="number" min="1" max="180" value={days} onChange={(e) => setDays(e.target.value)} />
+          </div>
+          <div>
+            <label>{t("Lead Time")}</label>
+            <input type="number" min="1" max="60" value={lead} onChange={(e) => setLead(e.target.value)} />
+          </div>
+          <div>
+            <label>{t("Auto-Create Restock Alerts")}</label>
+            <select value={alertAuto ? "YES" : "NO"} onChange={(e) => setAlertAuto(e.target.value === "YES")}>
+              <option value="YES">{t("YES")}</option>
+              <option value="NO">{t("NO")}</option>
+            </select>
+          </div>
+          <div>
+            <label>{t("Action")}</label>
+            <button type="button" onClick={runForecast} disabled={!productId}>
+              {t("Run Forecast")}
+            </button>
+          </div>
         </div>
       </section>
 
       <section className="grid grid-4">
-        <article className="kpi"><div className="kpi-label">{t("Selected Model")}</div><div className="kpi-value">{t(forecast.model)}</div></article>
-        <article className="kpi"><div className="kpi-label">{t("Avg/Day")}</div><div className="kpi-value">{forecast.avg}</div></article>
-        <article className="kpi"><div className="kpi-label">{t("Forecast")}</div><div className="kpi-value">{forecast.total}</div></article>
-        <article className="kpi"><div className="kpi-label">{t("Reorder")}</div><div className="kpi-value">{forecast.reorder}</div></article>
+        <article className="kpi"><div className="kpi-label">{t("Selected Model")}</div><div className="kpi-value">{t("PROPHET")}</div></article>
+        <article className="kpi"><div className="kpi-label">{t("Avg/Day")}</div><div className="kpi-value">{Number(hasForecastRun ? forecast.avg || 0 : 0).toFixed(2)}</div></article>
+        <article className="kpi"><div className="kpi-label">{t("Forecast")}</div><div className="kpi-value">{Number(hasForecastRun ? forecast.total || 0 : 0).toFixed(2)}</div></article>
+        <article className="kpi"><div className="kpi-label">{t("Suggested Reorder Qty")}</div><div className="kpi-value">{Number(hasForecastRun ? forecast.suggest_qty || 0 : 0)}</div></article>
       </section>
 
       <section className="grid grid-4">
-        <article className="kpi"><div className="kpi-label">{t("MAE")}</div><div className="kpi-value">{metricSummary.mae}</div></article>
-        <article className="kpi"><div className="kpi-label">{t("MAPE")}</div><div className="kpi-value">{metricSummary.mape}%</div></article>
-        <article className="kpi"><div className="kpi-label">{t("RMSE")}</div><div className="kpi-value">{metricSummary.rmse}</div></article>
-        <article className="kpi"><div className="kpi-label">{t("Confidence")}</div><div className="kpi-value">{confidencePercent}%</div></article>
+        <article className="kpi"><div className="kpi-label">{t("MAE")}</div><div className="kpi-value">{hasForecastRun ? metricSummary.mae : 0}</div></article>
+        <article className="kpi"><div className="kpi-label">{t("MAPE")}</div><div className="kpi-value">{hasForecastRun ? metricSummary.mape : 0}%</div></article>
+        <article className="kpi"><div className="kpi-label">{t("RMSE")}</div><div className="kpi-value">{hasForecastRun ? metricSummary.rmse : 0}</div></article>
+        <article className="kpi"><div className="kpi-label">{t("Confidence")}</div><div className="kpi-value">{hasForecastRun ? confidencePercent : 0}%</div></article>
       </section>
 
       <section className="grid grid-2">
         <article className="card">
-          <h3 className="card-title">{t("Historical vs Forecast (UI Preview)")}</h3>
+          <h3 className="card-title">{t("Historical vs Forecast")}</h3>
           <div className="trend-shell">
-            {[
-              { label: "D-6", actual: 2.1, predicted: 2.3 },
-              { label: "D-5", actual: 2.7, predicted: 2.6 },
-              { label: "D-4", actual: 2.5, predicted: 2.7 },
-              { label: "D-3", actual: 3.0, predicted: 2.9 },
-              { label: "D-2", actual: 2.8, predicted: 2.8 },
-              { label: "D-1", actual: 3.4, predicted: 3.1 }
-            ].map((x) => (
-              <div key={x.label} className="bar-row">
+            {chartRows.length ? chartRows.map((item) => (
+              <div key={`${item.mode}-${item.label}`} className="bar-row">
                 <div className="bar-head">
-                  <span>{x.label}</span>
-                  <strong>A:{x.actual} / P:{x.predicted}</strong>
+                  <span>{item.label}</span>
+                  <strong>
+                    {item.mode === "history" ? `${t("Actual")}: ${item.actual}` : `${t("Forecast")}: ${item.predicted}`}
+                  </strong>
                 </div>
                 <div className="bar-track">
-                  <div className="bar-fill" style={{ width: `${Math.max(10, Math.round((x.predicted / 3.5) * 100))}%` }} />
+                  <div className="bar-fill" style={{ width: `${Math.max(10, Math.min(100, Math.round((Number(item.predicted || 0) / Math.max(Number(forecast.avg || 1) * 2, 1)) * 100)))}%` }} />
                 </div>
               </div>
-            ))}
+            )) : <div className="muted">{t("Run a forecast to see Prophet output.")}</div>}
           </div>
         </article>
 
         <article className="card">
-          <h3 className="card-title">{t("Confidence Interval Window")}</h3>
+          <h3 className="card-title">{t("Forecast Window")}</h3>
           <div className="grid">
             <div className="stock-product-preview">
+              <strong>{t("Selected Product")}</strong>
+              <span>{selectedProduct?.product_name || "-"}</span>
+            </div>
+            <div className="stock-product-preview">
               <strong>{t("Predicted Demand")}</strong>
-              <span>{forecast.total}</span>
+              <span>{Number(forecast.total || 0).toFixed(2)}</span>
+            </div>
+            <div className="stock-product-preview">
+              <strong>{t("Safety Stock")}</strong>
+              <span>{Number(forecast.safety_stock || 0).toFixed(2)}</span>
+            </div>
+            <div className="stock-product-preview">
+              <strong>{t("Reorder Date")}</strong>
+              <span>{forecast.reorder_date || "-"}</span>
             </div>
             <div className="stock-product-preview">
               <strong>{t("CI Lower Bound")}</strong>
-              <span>{forecast.ciLow}</span>
+              <span>{Number(forecast.ci_low || 0).toFixed(2)}</span>
             </div>
             <div className="stock-product-preview">
               <strong>{t("CI Upper Bound")}</strong>
-              <span>{forecast.ciHigh}</span>
-            </div>
-            <div className="stock-product-preview">
-              <strong>{t("Interpretation")}</strong>
-              <span>{t("Expected range in next")} {days} {t("days with current model assumptions.")}</span>
+              <span>{Number(forecast.ci_high || 0).toFixed(2)}</span>
             </div>
           </div>
         </article>
       </section>
 
       <section className="card">
-        <h3 className="card-title">{t("Model Performance Comparison")}</h3>
+        <h3 className="card-title">{t("Prophet Model Performance")}</h3>
         <DataTable
-          columns={[t("Category"), t("Prophet MAE"), t("Prophet MAPE"), t("Prophet RMSE"), t("ARIMA MAE"), t("ARIMA MAPE"), t("ARIMA RMSE"), t("Selected")]}
-          rows={modelData.map((r) => [
-            r.category,
-            r.prophet_mae,
-            `${r.prophet_mape}%`,
-            r.prophet_rmse,
-            r.arima_mae,
-            `${r.arima_mape}%`,
-            r.arima_rmse,
-            t(r.selected)
+          columns={[t("Product"), t("Category"), t("MAE"), t("MAPE"), t("RMSE"), t("Horizon"), t("Generated At")]}
+          rows={modelData.map((row) => [
+            row.product,
+            row.category,
+            row.mae,
+            `${row.mape}%`,
+            row.rmse,
+            `${row.horizon}d`,
+            row.generated_at
           ])}
-          emptyText="No data"
+          emptyText={t("No data")}
         />
       </section>
 
       <section className="card">
         <h3 className="card-title">{t("Reorder Recommendations")}</h3>
         <DataTable
-          columns={[t("Product"), t("Avg/Day"), t("Lead"), t("Reorder"), t("Stock"), t("Suggest Qty"), t("Reorder Date"), t("Urgency")]}
-          rows={reorderData.map((r) => [
-            r.product,
-            r.avg_day,
-            r.lead,
-            r.reorder,
-            r.stock,
-            r.suggest,
-            r.reorder_date,
-            <span key={`${r.product}-u`} className={`chip ${r.urgency === "HIGH" ? "danger" : "warning"}`}>{t(r.urgency)}</span>
+          columns={[t("Product"), t("Avg/Day"), t("Lead"), t("Reorder"), t("Stock"), t("Suggest Qty"), t("Reorder Date"), t("Urgency"), t("Model")]}
+          rows={reorderData.map((row) => [
+            row.product,
+            row.avg_day,
+            row.lead,
+            row.reorder,
+            row.stock,
+            row.suggest,
+            row.reorder_date,
+            <span key={`${row.product}-urgency`} className={`chip ${row.urgency === "CRITICAL" || row.urgency === "HIGH" ? "danger" : "warning"}`}>{t(row.urgency)}</span>,
+            t(row.selected_model || "PROPHET")
           ])}
-          emptyText="No data"
+          emptyText={t("No data")}
         />
       </section>
 
       <section className="grid grid-2">
         <article className="card">
-          <h3 className="card-title">{t("Model Explainability")}</h3>
+          <h3 className="card-title">{t("Prophet Explainability")}</h3>
           <div className="grid">
             <div className="stock-product-preview">
-              <strong>{t("Why")} {t(forecast.model)} {t("selected?")}</strong>
-              <span>{t("Lower expected MAPE for this product demand pattern in recent windows.")}</span>
+              <strong>{t("Trend Signal")}</strong>
+              <span>{t("Prophet separates long-term demand trend from day-to-day noise.")}</span>
             </div>
             <div className="stock-product-preview">
               <strong>{t("Seasonality Impact")}</strong>
-              <span>{t("Weekly demand cycle detected around weekend peak.")}</span>
+              <span>{t("Weekly seasonality is used to capture repeating retail purchase cycles.")}</span>
             </div>
             <div className="stock-product-preview">
-              <strong>{t("Trend Signal")}</strong>
-              <span>{t("Stable upward trend with moderate volatility.")}</span>
+              <strong>{t("Recommendation Logic")}</strong>
+              <span>{t("Reorder quantity = forecast demand + 20% safety stock - current stock.")}</span>
             </div>
           </div>
         </article>
@@ -262,13 +325,6 @@ export default function AIPage() {
         <article className="card">
           <h3 className="card-title">{t("Bulk Forecast Job")}</h3>
           <div className="grid">
-            <div>
-              <label>{t("Auto-Create Restock Alerts")}</label>
-              <select value={alertAuto ? "YES" : "NO"} onChange={(e) => setAlertAuto(e.target.value === "YES")}>
-                <option value="YES">{t("YES")}</option>
-                <option value="NO">{t("NO")}</option>
-              </select>
-            </div>
             <div>
               <label>{t("Action")}</label>
               <button type="button" onClick={runBulkForecast} disabled={bulkRunning}>
@@ -279,6 +335,18 @@ export default function AIPage() {
               <strong>{t("Progress")}</strong>
               <span>{bulkProgress}%</span>
             </div>
+            <div className="stock-product-preview">
+              <strong>{t("Automated Schedule")}</strong>
+              <span>{t(scheduler?.schedule || "NONE")}</span>
+            </div>
+            <div className="stock-product-preview">
+              <strong>{t("Last Run")}</strong>
+              <span>{scheduler?.last_run_at || "-"}</span>
+            </div>
+            <div className="stock-product-preview">
+              <strong>{t("Next Run")}</strong>
+              <span>{scheduler?.next_run_at || "-"}</span>
+            </div>
           </div>
         </article>
       </section>
@@ -286,30 +354,35 @@ export default function AIPage() {
       <section className="card">
         <h3 className="card-title">{t("Forecast Versions")}</h3>
         <DataTable
-          columns={[t("Version"), t("Product"), t("Model"), t("Generated At"), t("Horizon"), t("MAPE"), t("Action")]}
-          rows={versions.map((v) => [
-            v.version,
-            `#${v.product}`,
-            t(v.model),
-            v.generated_at,
-            `${v.horizon}d`,
-            `${v.mape}%`,
-            <button key={v.version} type="button" className="btn-inline">{t("Open")}</button>
+          columns={[t("Version"), t("Product"), t("Model"), t("Generated At"), t("Horizon"), t("MAPE")]}
+          rows={versions.map((version) => [
+            version.version,
+            `#${version.product}`,
+            t(version.model),
+            version.generated_at,
+            `${version.horizon}d`,
+            `${version.mape}%`
           ])}
           emptyText={t("No versions")}
         />
       </section>
 
-      {ran ? (
-        <section className="card">
-          <h3 className="card-title">{t("Forecast Run History")}</h3>
-          <DataTable
-            columns={[t("Run Time"), t("Product ID"), t("Horizon"), t("Model"), t("MAE"), t("MAPE"), t("RMSE")]}
-            rows={history.map((h) => [h.time, `#${h.product}`, `${h.horizon}d`, t(h.selected), h.mae, `${h.mape}%`, h.rmse])}
-            emptyText={t("No run history")}
-          />
-        </section>
-      ) : null}
+      <section className="card">
+        <h3 className="card-title">{t("Forecast Run History")}</h3>
+        <DataTable
+          columns={[t("Run Time"), t("Product"), t("Horizon"), t("Model"), t("MAE"), t("MAPE"), t("RMSE")]}
+          rows={history.map((item) => [
+            item.time,
+            item.product_name || `#${item.product}`,
+            `${item.horizon}d`,
+            t(item.selected),
+            item.mae,
+            `${item.mape}%`,
+            item.rmse
+          ])}
+          emptyText={t("No run history")}
+        />
+      </section>
 
       {msg ? <div className="msg ok">{msg}</div> : null}
     </Layout>

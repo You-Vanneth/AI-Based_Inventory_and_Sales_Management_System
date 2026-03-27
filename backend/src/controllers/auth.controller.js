@@ -1,7 +1,8 @@
 import { dbQuery, isMysqlEnabled } from "../config/db.js";
 import { nowIso } from "../utils/helpers.js";
+import { hashPassword, hashToken, issueAuthToken, verifyPassword } from "../utils/security.js";
 
-export function createAuthController({ authTokens, users, sessions, appendUserActivity, nextSessionId }) {
+export function createAuthController({ authTokens }) {
   return {
     health(_req, res) {
       res.json({ ok: true, service: "ai-inventory-backend", time: nowIso() });
@@ -15,7 +16,7 @@ export function createAuthController({ authTokens, users, sessions, appendUserAc
             `SELECT u.id, u.username, u.email, u.password_hash, u.full_name, u.locked, r.code AS role_name
              FROM users u
              JOIN roles r ON r.id = u.role_id
-             WHERE LOWER(u.email) = LOWER(?)
+             WHERE LOWER(u.email) = LOWER($1)
              LIMIT 1`,
             [String(email || "").trim()]
           );
@@ -25,23 +26,26 @@ export function createAuthController({ authTokens, users, sessions, appendUserAc
           } else {
             const pass = String(password || "");
             const stored = String(row.password_hash || "");
-            const demoHashCompat = stored.startsWith("$2b$10$demo.hash") && pass === "123456";
-            if (pass !== stored && !demoHashCompat) return res.status(401).json({ message: "Invalid email or password" });
+            const passwordCheck = verifyPassword(pass, stored);
+            if (!passwordCheck.valid) return res.status(401).json({ message: "Invalid email or password" });
             if (row.locked) return res.status(403).json({ message: "Account is locked" });
 
-            const token = `demo-token-${row.id}-${Date.now()}`;
+            const token = issueAuthToken({ userId: row.id, role: row.role_name });
             authTokens.set(token, Number(row.id));
-            await dbQuery("UPDATE users SET last_login = NOW() WHERE id = ?", [row.id]);
+            if (passwordCheck.needsRehash) {
+              await dbQuery("UPDATE users SET password_hash = $1, updated_at = NOW() WHERE id = $2", [hashPassword(pass), row.id]);
+            }
+            await dbQuery("UPDATE users SET last_login = NOW() WHERE id = $1", [row.id]);
             await dbQuery(
-              "INSERT INTO user_sessions (user_id, device, ip, started_at, active) VALUES (?, ?, ?, NOW(), 1)",
+              "INSERT INTO user_sessions (user_id, device, ip, started_at, active) VALUES ($1, $2, $3, NOW(), TRUE)",
               [row.id, "Web Browser", req.ip]
             );
             await dbQuery(
-              "INSERT INTO auth_tokens (user_id, token_hash, issued_at, expires_at) VALUES (?, ?, NOW(), DATE_ADD(NOW(), INTERVAL 30 DAY))",
-              [row.id, token]
+              "INSERT INTO auth_tokens (user_id, token_hash, issued_at, expires_at) VALUES ($1, $2, NOW(), NOW() + INTERVAL '30 days')",
+              [row.id, hashToken(token)]
             );
             await dbQuery(
-              "INSERT INTO user_activity_logs (user_id, action, detail, created_at) VALUES (?, 'LOGIN', ?, NOW())",
+              "INSERT INTO user_activity_logs (user_id, action, detail, created_at) VALUES ($1, 'LOGIN', $2, NOW())",
               [row.id, row.username]
             );
             return res.json({
@@ -60,41 +64,12 @@ export function createAuthController({ authTokens, users, sessions, appendUserAc
           }
         } catch (err) {
           // eslint-disable-next-line no-console
-          console.error("mysql login failed:", err.message);
+          console.error("postgres login failed:", err.message);
+          return res.status(500).json({ message: "Login failed" });
         }
       }
 
-      const user = users.find(
-        (u) => u.email.toLowerCase() === String(email || "").toLowerCase() && u.password === password
-      );
-      if (!user) return res.status(401).json({ message: "Invalid email or password" });
-      if (user.locked) return res.status(403).json({ message: "Account is locked" });
-
-      const token = `demo-token-${user.id}-${Date.now()}`;
-      authTokens.set(token, user.id);
-      user.last_login = nowIso();
-      sessions.push({
-        id: nextSessionId(),
-        user_id: user.id,
-        device: "Web Browser",
-        ip: req.ip,
-        started_at: nowIso(),
-        active: true
-      });
-      appendUserActivity("LOGIN", user.username);
-      return res.json({
-        data: {
-          token,
-          user: {
-            id: user.id,
-            username: user.username,
-            email: user.email,
-            full_name: user.full_name,
-            role: user.role,
-            role_name: user.role_name
-          }
-        }
-      });
+      return res.status(503).json({ message: "PostgreSQL is not configured" });
     },
 
     async logout(req, res) {
@@ -102,18 +77,17 @@ export function createAuthController({ authTokens, users, sessions, appendUserAc
       const token = authHeader.replace("Bearer ", "").trim();
       if (isMysqlEnabled() && token) {
         try {
-          await dbQuery("UPDATE auth_tokens SET revoked_at = NOW() WHERE token_hash = ? AND revoked_at IS NULL", [token]);
+          await dbQuery("UPDATE auth_tokens SET revoked_at = NOW() WHERE token_hash = $1 AND revoked_at IS NULL", [hashToken(token)]);
           await dbQuery(
-            "INSERT INTO user_activity_logs (user_id, action, detail, created_at) VALUES (?, 'LOGOUT', ?, NOW())",
+            "INSERT INTO user_activity_logs (user_id, action, detail, created_at) VALUES ($1, 'LOGOUT', $2, NOW())",
             [req.user?.id || null, req.user?.username || "unknown"]
           );
         } catch (err) {
           // eslint-disable-next-line no-console
-          console.error("mysql logout failed:", err.message);
+          console.error("postgres logout failed:", err.message);
         }
       }
-      if (token && token !== "demo-token") authTokens.delete(token);
-      appendUserActivity("LOGOUT", req.user?.username || "unknown");
+      if (token) authTokens.delete(token);
       res.json({ data: { ok: true } });
     },
 

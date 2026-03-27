@@ -10,6 +10,7 @@ export default function EmailSettingsPage() {
     smtp_port: 587,
     smtp_user: "",
     smtp_password: "",
+    has_smtp_password: false,
     sender_name: "AI Inventory",
     sender_email: "",
     use_tls: 1,
@@ -29,6 +30,7 @@ export default function EmailSettingsPage() {
           setForm((prev) => ({
             ...prev,
             ...res.data,
+            smtp_password: "",
             to_email: prev.to_email || "",
             alert_recipients: Array.isArray(res.data.alert_recipients) && res.data.alert_recipients.length
               ? res.data.alert_recipients
@@ -112,7 +114,18 @@ export default function EmailSettingsPage() {
           </div>
           <div className="row">
             <div><label>{t("SMTP User")}</label><input value={form.smtp_user} onChange={(e) => update("smtp_user", e.target.value)} /></div>
-            <div><label>{t("SMTP Password")}</label><input type="password" value={form.smtp_password} onChange={(e) => update("smtp_password", e.target.value)} /></div>
+            <div>
+              <label>{t("SMTP Password")}</label>
+              <input
+                type="password"
+                value={form.smtp_password}
+                onChange={(e) => update("smtp_password", e.target.value)}
+                placeholder={form.has_smtp_password ? t("Leave blank to keep current password") : ""}
+              />
+              {form.has_smtp_password ? (
+                <p className="muted mt-8">{t("Saved password is hidden. Enter a new one only if you want to replace it.")}</p>
+              ) : null}
+            </div>
           </div>
           <div className="row">
             <div><label>{t("Sender Name")}</label><input value={form.sender_name} onChange={(e) => update("sender_name", e.target.value)} /></div>

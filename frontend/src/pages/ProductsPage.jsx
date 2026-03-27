@@ -21,6 +21,7 @@ function getStockStatus(product) {
 
 export default function ProductsPage() {
   const [products, setProducts] = useState(initial);
+  const [categories, setCategories] = useState(["General"]);
   const [search, setSearch] = useState("");
   const [supplierFilter, setSupplierFilter] = useState("ALL");
   const [stockFilter, setStockFilter] = useState("ALL");
@@ -31,10 +32,12 @@ export default function ProductsPage() {
   const [pageSize, setPageSize] = useState(5);
   const [msg, setMsg] = useState("");
   const [editingId, setEditingId] = useState(null);
+  const [deleteTarget, setDeleteTarget] = useState(null);
   const [showStockModal, setShowStockModal] = useState(false);
   const [showScanner, setShowScanner] = useState(false);
   const [scannerTarget, setScannerTarget] = useState("product");
   const [scannerMsg, setScannerMsg] = useState("");
+  const [manualScanValue, setManualScanValue] = useState("");
   const [movements, setMovements] = useState([]);
   const [csvInput, setCsvInput] = useState("");
   const fileInputRef = useRef(null);
@@ -82,9 +85,18 @@ export default function ProductsPage() {
     setMovements(Array.isArray(res?.data) ? res.data : []);
   };
 
+  const loadCategories = async () => {
+    const res = await apiFetch("/categories");
+    const names = Array.isArray(res?.data)
+      ? Array.from(new Set(res.data.map((item) => item.name_en).filter(Boolean)))
+      : [];
+    setCategories(names.length ? ["General", ...names.filter((name) => name !== "General")] : ["General"]);
+  };
+
   useEffect(() => {
     loadProducts().catch(() => {});
     loadMovements().catch(() => {});
+    loadCategories().catch(() => {});
   }, []);
 
   const suppliers = useMemo(
@@ -174,6 +186,28 @@ export default function ProductsPage() {
     if (videoRef.current) videoRef.current.srcObject = null;
   };
 
+  const createBarcodeDetector = async () => {
+    if (!("BarcodeDetector" in window)) {
+      throw new Error(t("BarcodeDetector is not supported in this browser."));
+    }
+
+    const requestedFormats = ["ean_13", "ean_8", "upc_a", "upc_e", "code_128", "code_39", "qr_code"];
+    let formats = requestedFormats;
+
+    if (typeof window.BarcodeDetector.getSupportedFormats === "function") {
+      const supported = await window.BarcodeDetector.getSupportedFormats();
+      const filtered = requestedFormats.filter((format) => supported.includes(format));
+      if (filtered.length) formats = filtered;
+      else if (supported.length) formats = supported;
+    }
+
+    try {
+      return new window.BarcodeDetector({ formats });
+    } catch {
+      return new window.BarcodeDetector();
+    }
+  };
+
   const scanLoop = async () => {
     if (!videoRef.current || !detectorRef.current) return;
     try {
@@ -199,26 +233,28 @@ export default function ProductsPage() {
   const startScanner = async (target = "product") => {
     setScannerTarget(target);
     setScannerMsg("");
+    setManualScanValue("");
+    setShowScanner(true);
     if (!("BarcodeDetector" in window)) {
       setScannerMsg(t("BarcodeDetector is not supported in this browser."));
       return;
     }
     try {
-      detectorRef.current = new window.BarcodeDetector({
-        formats: ["ean_13", "ean_8", "upc_a", "upc_e", "code_128", "code_39", "qr_code"]
-      });
+      detectorRef.current = await createBarcodeDetector();
       const stream = await navigator.mediaDevices.getUserMedia({
         video: { facingMode: { ideal: "environment" } },
         audio: false
       });
       streamRef.current = stream;
-      setShowScanner(true);
-      setTimeout(() => {
-        if (!videoRef.current) return;
-        videoRef.current.srcObject = stream;
-        videoRef.current.play().catch(() => {});
+      if (!videoRef.current) return;
+      videoRef.current.srcObject = stream;
+      videoRef.current.onloadedmetadata = null;
+      await videoRef.current.play().catch(() => {});
+      const startLoop = () => {
         rafRef.current = requestAnimationFrame(scanLoop);
-      }, 40);
+      };
+      if (videoRef.current.readyState >= 2) startLoop();
+      else videoRef.current.onloadedmetadata = startLoop;
     } catch (error) {
       setScannerMsg(`${t("Unable to start camera scanner")}: ${error.message}`);
       stopScanner();
@@ -227,7 +263,23 @@ export default function ProductsPage() {
 
   const closeScanner = () => {
     setShowScanner(false);
+    setManualScanValue("");
     stopScanner();
+  };
+
+  const applyManualScan = () => {
+    const scanned = manualScanValue.trim();
+    if (!scanned) {
+      setScannerMsg(t("Please enter a barcode."));
+      return;
+    }
+    if (scannerTarget === "stock") {
+      updateStockForm("barcode", scanned);
+    } else {
+      updateForm("barcode", scanned);
+    }
+    setMsg(`${t("Barcode detected")}: ${scanned}`);
+    closeScanner();
   };
 
   const validateProduct = () => {
@@ -273,6 +325,7 @@ export default function ProductsPage() {
       await apiFetch(`/products/${id}`, { method: "DELETE" });
       await loadProducts();
       setMsg(t("Product deleted."));
+      setDeleteTarget(null);
     } catch (err) {
       setMsg(`${t("Delete failed")}: ${err.message}`);
     }
@@ -440,7 +493,16 @@ export default function ProductsPage() {
                 </div>
               </div>
               <div className="row products-form-row">
-                <div><label>{t("Category")}</label><input value={form.category_name} onChange={(e) => updateForm("category_name", e.target.value)} /></div>
+                <div>
+                  <label>{t("Category")}</label>
+                  <select value={form.category_name} onChange={(e) => updateForm("category_name", e.target.value)}>
+                    {categories.map((category) => (
+                      <option key={category} value={category}>
+                        {category}
+                      </option>
+                    ))}
+                  </select>
+                </div>
                 <div><label>{t("Supplier")}</label><input value={form.supplier} onChange={(e) => updateForm("supplier", e.target.value)} /></div>
               </div>
               <div className="row products-form-row">
@@ -627,13 +689,13 @@ export default function ProductsPage() {
                     {x.status === "ACTIVE" ? t("Archive") : t("Activate")}
                   </button>
                 </div>
-                <button type="button" className="btn-inline danger" onClick={() => deleteProduct(x.id)}>{t("Delete")}</button>
+                <button type="button" className="btn-inline danger" onClick={() => setDeleteTarget(x)}>{t("Delete")}</button>
               </div>
             ])}
             emptyText="No products"
           />
-          <div className="row mt-12 products-pagination">
-            <div>
+          <div className="mt-12 products-pagination">
+            <div className="products-pagination-size">
               <label>{t("Page Size")}</label>
               <select value={pageSize} onChange={(e) => { setPageSize(Number(e.target.value)); setPage(1); }}>
                 <option value={5}>5</option>
@@ -641,13 +703,28 @@ export default function ProductsPage() {
                 <option value={20}>20</option>
               </select>
             </div>
-            <div>
-              <label>{t("Page")}</label>
-              <div className="row">
-                <button type="button" className="secondary" onClick={() => setPage((p) => Math.max(1, p - 1))}>{t("Prev")}</button>
-                <button type="button" onClick={() => setPage((p) => Math.min(totalPages, p + 1))}>{t("Next")}</button>
+            <div className="products-pagination-nav">
+              <span className="products-pagination-label">{t("Page")}</span>
+              <div className="products-pagination-controls">
+                <button
+                  type="button"
+                  className="secondary"
+                  onClick={() => setPage((p) => Math.max(1, p - 1))}
+                  disabled={page <= 1}
+                >
+                  {t("Prev")}
+                </button>
+                <span className="products-pagination-status">
+                  {page} / {totalPages}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+                  disabled={page >= totalPages}
+                >
+                  {t("Next")}
+                </button>
               </div>
-              <p className="mt-8">{t("Page")} {page} / {totalPages}</p>
             </div>
           </div>
         </section>
@@ -695,6 +772,48 @@ export default function ProductsPage() {
         <p className="mb-14">{t("Point your camera at a barcode to fill barcode input.")}</p>
         <video ref={videoRef} className="scanner-video" autoPlay playsInline muted />
         {scannerMsg ? <div className="msg error">{scannerMsg}</div> : null}
+        <div className="scanner-manual">
+          <label>{t("Manual Barcode Entry")}</label>
+          <div className="scanner-manual-row">
+            <input
+              value={manualScanValue}
+              onChange={(e) => setManualScanValue(e.target.value)}
+              placeholder={t("Enter barcode manually")}
+            />
+            <button type="button" className="secondary" onClick={applyManualScan}>{t("Use Barcode")}</button>
+          </div>
+        </div>
+      </Modal>
+
+      <Modal
+        open={Boolean(deleteTarget)}
+        onClose={() => setDeleteTarget(null)}
+        title={t("Delete Product")}
+      >
+        {deleteTarget ? (
+          <div className="grid">
+            <div className="msg error">
+              <strong>{t("This action will permanently remove the product.")}</strong>
+            </div>
+            <div className="stock-product-preview">
+              <strong>{deleteTarget.product_name}</strong>
+              <span>{t("Barcode")}: {deleteTarget.barcode}</span>
+              <span>{t("Category")}: {deleteTarget.category_name || "-"}</span>
+              <span>{t("Supplier")}: {deleteTarget.supplier || "-"}</span>
+            </div>
+            <p className="muted">
+              {t("Delete this product only if you are sure it should no longer exist in the catalog.")}
+            </p>
+            <div className="row">
+              <button type="button" className="danger" onClick={() => deleteProduct(deleteTarget.id)}>
+                {t("Yes, Delete")}
+              </button>
+              <button type="button" className="secondary" onClick={() => setDeleteTarget(null)}>
+                {t("Cancel")}
+              </button>
+            </div>
+          </div>
+        ) : null}
       </Modal>
 
       {msg ? <div className="msg ok">{msg}</div> : null}

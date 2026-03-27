@@ -2,10 +2,25 @@ import "dotenv/config";
 import express from "express";
 import cors from "cors";
 import morgan from "morgan";
-import { dbQuery, getMysqlPool, isMysqlEnabled } from "./config/db.js";
+import {
+  closeMysqlPool,
+  dbQuery,
+  describeDatabaseConnectionError,
+  getMysqlPool,
+  isMysqlEnabled,
+  pingMysql
+} from "./config/db.js";
+import { env, validateEnv } from "./config/env.js";
+import { createAiController } from "./controllers/ai.controller.js";
 import { createAuthController } from "./controllers/auth.controller.js";
 import { createAuthRequired } from "./middlewares/auth.middleware.js";
+import { attachRequestContext, errorHandler, notFoundHandler } from "./middlewares/error.middleware.js";
+import { createRateLimiter } from "./middlewares/rate-limit.middleware.js";
+import { createAiRouter } from "./routes/ai.routes.js";
 import { createAuthRouter } from "./routes/auth.routes.js";
+import { createAiService } from "./services/ai.service.js";
+import { createNotificationService } from "./services/notification.service.js";
+import { createSchedulerService } from "./services/scheduler.service.js";
 import {
   buildPdfDocument,
   buildXlsxDocument,
@@ -16,14 +31,63 @@ import {
   startOfDay,
   toNumber
 } from "./utils/helpers.js";
+import { encryptSecret } from "./utils/crypto.js";
+import { hashPassword } from "./utils/security.js";
 
+validateEnv();
 const app = express();
-const PORT = Number(process.env.PORT || 5001);
-const FRONTEND_URL = String(process.env.FRONTEND_URL || "").trim();
+const PORT = env.port;
+const FRONTEND_URL = env.frontendUrl;
+const NODE_ENV = env.nodeEnv;
+const allowedOrigins = env.corsOrigins;
 
-app.use(cors());
-app.use(express.json({ limit: "2mb" }));
-app.use(morgan("dev"));
+app.set("trust proxy", env.trustProxy);
+app.use(attachRequestContext);
+
+app.use(
+  cors({
+    origin(origin, callback) {
+      if (!origin || !allowedOrigins.length || allowedOrigins.includes(origin)) {
+        callback(null, true);
+        return;
+      }
+      callback(new Error("Not allowed by CORS"));
+    }
+  })
+);
+app.use(express.json({ limit: env.requestBodyLimit }));
+morgan.token("request-id", (req) => req.requestId || "-");
+app.use(morgan(":method :url :status :response-time ms req=:request-id"));
+app.use((req, res, next) => {
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  res.setHeader("X-Frame-Options", "DENY");
+  res.setHeader("Referrer-Policy", "strict-origin-when-cross-origin");
+  res.setHeader("X-XSS-Protection", "0");
+  if (NODE_ENV === "production") {
+    res.setHeader("Strict-Transport-Security", "max-age=31536000; includeSubDomains");
+    res.setHeader("Content-Security-Policy", "default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'");
+  }
+  next();
+});
+
+app.use(
+  "/api/v1/auth",
+  createRateLimiter({
+    windowMs: env.authRateLimitWindowMs,
+    max: env.authRateLimitMax,
+    keyPrefix: "auth",
+    message: "Too many authentication requests"
+  })
+);
+app.use(
+  "/api/v1",
+  createRateLimiter({
+    windowMs: env.apiRateLimitWindowMs,
+    max: env.apiRateLimitMax,
+    keyPrefix: "api",
+    message: "Too many API requests"
+  })
+);
 
 function asBool(value) {
   return Number(value || 0) === 1 || value === true;
@@ -45,7 +109,7 @@ async function getBackendStatusSummary(req) {
     mysql: {
       enabled: isMysqlEnabled(),
       connected: false,
-      label: "Not configured"
+      label: "PostgreSQL not configured"
     }
   };
 
@@ -55,10 +119,10 @@ async function getBackendStatusSummary(req) {
     const pool = getMysqlPool();
     await pool.query("SELECT 1 AS ok");
     summary.mysql.connected = true;
-    summary.mysql.label = `Connected to ${process.env.MYSQL_DATABASE || "ai_inventory"}`;
+    summary.mysql.label = "Connected to PostgreSQL";
   } catch (err) {
     summary.mysql.connected = false;
-    summary.mysql.label = `Connection failed: ${err.message}`;
+    summary.mysql.label = `PostgreSQL connection failed: ${err.message}`;
   }
 
   return summary;
@@ -221,304 +285,87 @@ function renderBackendPage(summary) {
 </html>`;
 }
 
-// ===== in-memory data =====
-let userIdSeq = 2;
-let productIdSeq = 4;
-let categoryIdSeq = 2;
-let movementIdSeq = 1;
-let saleIdSeq = 1000;
-let forecastVersionSeq = 2;
-let notificationIdSeq = 3;
-let sessionIdSeq = 3;
-let reportRunIdSeq = 1;
+// ===== in-memory data (disabled in DB-only mode) =====
+let userIdSeq = 0;
+let productIdSeq = 0;
+let categoryIdSeq = 0;
+let movementIdSeq = 0;
+let saleIdSeq = 0;
+let forecastVersionSeq = 0;
+let notificationIdSeq = 0;
+let sessionIdSeq = 0;
+let reportRunIdSeq = 0;
 
-const users = [
-  {
-    id: 1,
-    username: "admin",
-    email: "admin@example.com",
-    password: "123456",
-    full_name: "Demo Admin",
-    role: "ADMINISTRATOR",
-    role_name: "ADMINISTRATOR",
-    status: "ACTIVE",
-    locked: false,
-    force_reset: false,
-    created_by: "System",
-    created_at: "2026-02-01T08:00:00.000Z",
-    updated_by: "System",
-    updated_at: "2026-03-01T09:10:00.000Z",
-    last_login: nowIso()
-  },
-  {
-    id: 2,
-    username: "cashier1",
-    email: "cashier@example.com",
-    password: "123456",
-    full_name: "Demo Cashier",
-    role: "CASHIER",
-    role_name: "CASHIER",
-    status: "ACTIVE",
-    locked: false,
-    force_reset: false,
-    created_by: "Demo Admin",
-    created_at: "2026-02-03T10:15:00.000Z",
-    updated_by: "Manager A",
-    updated_at: "2026-03-04T16:05:00.000Z",
-    last_login: nowIso()
-  }
-];
-
-const roleTemplates = {
-  ADMINISTRATOR: [
-    "dashboard.view",
-    "products.manage",
-    "sales.manage",
-    "reports.view",
-    "ai.manage",
-    "inventory.manage",
-    "categories.manage",
-    "users.manage",
-    "email.manage"
-  ],
-  CASHIER: ["dashboard.view", "products.view", "sales.create", "sales.refund", "reports.view"]
-};
-
-const userPermissions = {
-  1: [...roleTemplates.ADMINISTRATOR],
-  2: [...roleTemplates.CASHIER]
-};
-
-const sessions = [
-  { id: 1, user_id: 1, device: "MacBook Pro", ip: "103.1.2.3", started_at: nowIso(), active: true },
-  { id: 2, user_id: 2, device: "Windows POS", ip: "10.0.0.12", started_at: nowIso(), active: true }
-];
-
+const users = [];
+const roleTemplates = { ADMINISTRATOR: [], CASHIER: [] };
+const userPermissions = {};
+const sessions = [];
 const userActivity = [];
-const authTokens = new Map([["demo-token", 1]]); // token -> userId
+const authTokens = new Map(); // token -> userId
 
-const categories = [
-  {
-    id: 1,
-    name_en: "Drink",
-    name_km: "ភេសជ្ជៈ",
-    description: "Beverages and bottled items",
-    status: "ACTIVE",
-    product_count: 2,
-    icon_url: "",
-    created_by: "Demo Admin",
-    created_at: "2026-02-01T09:14:00.000Z",
-    updated_by: "Demo Admin",
-    updated_at: "2026-03-01T15:02:00.000Z"
-  },
-  {
-    id: 2,
-    name_en: "Food",
-    name_km: "អាហារ",
-    description: "General food products",
-    status: "ACTIVE",
-    product_count: 2,
-    icon_url: "",
-    created_by: "Demo Admin",
-    created_at: "2026-02-02T10:44:00.000Z",
-    updated_by: "Manager A",
-    updated_at: "2026-03-04T11:18:00.000Z"
-  }
-];
-
-const products = [
-  {
-    id: 1,
-    product_name: "Coca Cola 330ml",
-    barcode: "8850001",
-    category_name: "Drink",
-    quantity: 14,
-    cost_price: 0.55,
-    selling_price: 0.75,
-    min_stock_level: 10,
-    supplier: "Coca Distributor",
-    expiry_date: "2026-03-30",
-    image_url: "",
-    status: "ACTIVE",
-    monthly_sales: 84,
-    store: "MAIN",
-    created_at: "2026-03-01T09:00:00.000Z",
-    updated_at: "2026-03-01T09:00:00.000Z"
-  },
-  {
-    id: 2,
-    product_name: "Instant Noodle",
-    barcode: "8850002",
-    category_name: "Food",
-    quantity: 5,
-    cost_price: 0.3,
-    selling_price: 0.45,
-    min_stock_level: 12,
-    supplier: "Noodle Trading",
-    expiry_date: "2026-08-15",
-    image_url: "",
-    status: "ACTIVE",
-    monthly_sales: 96,
-    store: "MAIN",
-    created_at: "2026-03-01T09:00:00.000Z",
-    updated_at: "2026-03-01T09:00:00.000Z"
-  },
-  {
-    id: 3,
-    product_name: "UHT Milk",
-    barcode: "8850003",
-    category_name: "Food",
-    quantity: 8,
-    cost_price: 0.95,
-    selling_price: 1.2,
-    min_stock_level: 10,
-    supplier: "Dairy KH",
-    expiry_date: "2026-03-12",
-    image_url: "",
-    status: "ACTIVE",
-    monthly_sales: 41,
-    store: "MAIN",
-    created_at: "2026-03-01T09:00:00.000Z",
-    updated_at: "2026-03-01T09:00:00.000Z"
-  },
-  {
-    id: 4,
-    product_name: "Hand Soap",
-    barcode: "8850011",
-    category_name: "Food",
-    quantity: 2,
-    cost_price: 0.9,
-    selling_price: 1.4,
-    min_stock_level: 8,
-    supplier: "Clean Plus",
-    expiry_date: "",
-    image_url: "",
-    status: "ACTIVE",
-    monthly_sales: 18,
-    store: "MAIN",
-    created_at: "2026-03-01T09:00:00.000Z",
-    updated_at: "2026-03-01T09:00:00.000Z"
-  }
-];
-
-const stockLots = [
-  { id: 1, product_id: 3, product_name: "UHT Milk", barcode: "8850003", lot: "MILK-A12", qty: 4, expiry: "2026-03-10", supplier: "Dairy KH", store: "MAIN" },
-  { id: 2, product_id: 3, product_name: "UHT Milk", barcode: "8850003", lot: "MILK-B07", qty: 4, expiry: "2026-03-18", supplier: "Dairy KH", store: "MAIN" },
-  { id: 3, product_id: 2, product_name: "Instant Noodle", barcode: "8850002", lot: "NDL-C33", qty: 5, expiry: "2026-08-15", supplier: "Noodle Trading", store: "MAIN" }
-];
-
+const categories = [];
+const products = [];
+const stockLots = [];
 const stockMovements = [];
-
 const sales = [];
 const shiftClosures = [];
+const bankTransferSettings = [];
 
-const emailSettings = {
-  smtp_host: "smtp.gmail.com",
-  smtp_port: 587,
-  smtp_user: "",
-  smtp_password: "",
-  sender_name: "AI Inventory",
-  sender_email: "",
-  use_tls: 1,
-  alert_expiry_days: 7,
-  alert_low_stock_enabled: 1,
-  alert_expiry_enabled: 1,
-  alert_recipients: [""]
-};
-
-const notifications = [
-  {
-    id: 1,
-    time: "2026-03-05 09:12",
-    type: "LOW_STOCK",
-    priority: "HIGH",
-    product: "Instant Noodle",
-    message: "Stock is below minimum threshold (5/12).",
-    channel: "IN_APP + EMAIL",
-    delivery_status: "SENT",
-    read: false,
-    acknowledged: false,
-    snoozed_until: "-",
-    source_link: "/inventory-health",
-    read_by: "-",
-    read_at: "-"
-  },
-  {
-    id: 2,
-    time: "2026-03-05 08:40",
-    type: "EXPIRY_7D",
-    priority: "HIGH",
-    product: "UHT Milk",
-    message: "Product expires within 7 days.",
-    channel: "IN_APP + EMAIL",
-    delivery_status: "FAILED",
-    read: false,
-    acknowledged: false,
-    snoozed_until: "-",
-    source_link: "/inventory-health",
-    read_by: "-",
-    read_at: "-"
-  },
-  {
-    id: 3,
-    time: "2026-03-04 17:25",
-    type: "REORDER_AI",
-    priority: "MEDIUM",
-    product: "Coca Cola 330ml",
-    message: "AI recommends reorder quantity +26.",
-    channel: "IN_APP",
-    delivery_status: "SENT",
-    read: true,
-    acknowledged: true,
-    snoozed_until: "-",
-    source_link: "/ai",
-    read_by: "Demo Admin",
-    read_at: "2026-03-04 17:30"
-  }
-];
-
-const notificationPreferences = {
-  role: "ADMIN",
-  channel_in_app: true,
-  channel_email: true,
-  low_stock_threshold: 12,
-  expiry_window_days: 7,
-  dedup_minutes: 30,
-  suppression_enabled: true
-};
-
-const notificationRules = [
-  { id: 1, rule: "LOW_STOCK", severity: "HIGH", channel: "IN_APP + EMAIL", active: true },
-  { id: 2, rule: "CRITICAL_STOCK", severity: "CRITICAL", channel: "IN_APP + EMAIL", active: true },
-  { id: 3, rule: "EXPIRY_30D", severity: "MEDIUM", channel: "IN_APP", active: true },
-  { id: 4, rule: "EXPIRY_7D", severity: "HIGH", channel: "IN_APP + EMAIL", active: true },
-  { id: 5, rule: "REORDER_AI", severity: "MEDIUM", channel: "IN_APP", active: true }
-];
-
+const emailSettings = null;
+const notifications = [];
+const notificationPreferences = {};
+const notificationRules = [];
 const reportRuns = [];
-
-const aiModelPerformance = [
-  { category: "Beverages", prophet_mape: 12.8, arima_mape: 14.5, prophet_mae: 3.1, arima_mae: 3.7, prophet_rmse: 4.8, arima_rmse: 5.2, selected: "PROPHET" },
-  { category: "Snacks", prophet_mape: 15.2, arima_mape: 13.9, prophet_mae: 3.8, arima_mae: 3.5, prophet_rmse: 5.6, arima_rmse: 5.0, selected: "ARIMA" },
-  { category: "Rice & Grains", prophet_mape: 10.5, arima_mape: 11.2, prophet_mae: 2.5, arima_mae: 2.8, prophet_rmse: 3.9, arima_rmse: 4.2, selected: "PROPHET" }
-];
-
-const aiForecastVersions = [
-  { id: 1, version: "FCAST-2026-03-01-01", product: 1, model: "PROPHET", generated_at: "2026-03-01 09:00", horizon: 30, mape: 13.4 },
-  { id: 2, version: "FCAST-2026-02-24-03", product: 1, model: "ARIMA", generated_at: "2026-02-24 09:00", horizon: 30, mape: 14.1 }
-];
-
+const aiForecastVersions = [];
 const aiForecastHistory = [];
+const emailSettingsState = { emailSettings, notificationPreferences, notificationRules };
+const notificationService = createNotificationService({
+  dbQuery,
+  isMysqlEnabled,
+  notifications,
+  nextNotificationId: () => ++notificationIdSeq,
+  emailSettingsRef: emailSettingsState
+});
 const authRequired = createAuthRequired({ authTokens, users });
 const authController = createAuthController({
-  authTokens,
-  users,
-  sessions,
-  appendUserActivity,
-  nextSessionId: () => sessionIdSeq++
+  authTokens
 });
+const aiService = createAiService({
+  dbQuery,
+  isMysqlEnabled,
+  products,
+  sales,
+  categories,
+  aiForecastVersions,
+  aiForecastHistory,
+  nextForecastVersionId: () => ++forecastVersionSeq,
+  notificationService
+});
+const schedulerService = createSchedulerService({ aiService });
+const aiController = createAiController({ aiService, schedulerService });
 
 app.use("/api/v1", createAuthRouter({ authController, authRequired }));
+app.use("/api/v1", createAiRouter({ authRequired, aiController }));
+
+app.get("/api/v1/ready", async (_req, res, next) => {
+  try {
+    if (!isMysqlEnabled()) {
+      return res.status(503).json({ ok: false, environment: NODE_ENV, mysql: "not_configured" });
+    }
+    await pingMysql();
+    res.json({
+      ok: true,
+      environment: NODE_ENV,
+      mysql: "ready"
+    });
+  } catch (err) {
+    res.status(503).json({
+      ok: false,
+      environment: NODE_ENV,
+      mysql: describeDatabaseConnectionError(err)
+    });
+  }
+});
 
 function appendUserActivity(action, detail) {
   userActivity.unshift({
@@ -529,22 +376,13 @@ function appendUserActivity(action, detail) {
   });
 }
 
-function notifyFromInventory(product, type, message) {
-  notifications.unshift({
-    id: ++notificationIdSeq,
-    time: new Date().toLocaleString(),
+async function notifyFromInventory(product, type, message, sourceLink = "/inventory-health") {
+  return notificationService.createNotification({
     type,
-    priority: type === "LOW_STOCK" ? "HIGH" : "MEDIUM",
-    product: product.product_name,
+    productId: product.id,
+    productName: product.product_name,
     message,
-    channel: "IN_APP + EMAIL",
-    delivery_status: "SENT",
-    read: false,
-    acknowledged: false,
-    snoozed_until: "-",
-    source_link: "/inventory-health",
-    read_by: "-",
-    read_at: "-"
+    sourceLink
   });
 }
 
@@ -647,21 +485,59 @@ function dashboardSummary() {
   };
 }
 
-async function dashboardSummaryFromDb() {
+function normalizeDashboardDateRange(period, from, to) {
+  const today = startOfDay();
+  const end = new Date(today);
+  end.setDate(end.getDate() + 1);
+  let start = new Date(today);
+
+  if (period === "30d") {
+    start.setDate(start.getDate() - 29);
+  } else {
+    start.setDate(start.getDate() - 6);
+  }
+
+  if (period === "custom" && from && to) {
+    const parsedFrom = new Date(`${from}T00:00:00`);
+    const parsedTo = new Date(`${to}T00:00:00`);
+    if (!Number.isNaN(parsedFrom.getTime()) && !Number.isNaN(parsedTo.getTime()) && parsedFrom <= parsedTo) {
+      start = parsedFrom;
+      end.setTime(parsedTo.getTime());
+      end.setDate(end.getDate() + 1);
+    }
+  }
+
+  return {
+    start,
+    end,
+    startIso: start.toISOString(),
+    endIso: end.toISOString()
+  };
+}
+
+async function dashboardSummaryFromDb({ period = "7d", from = "", to = "" } = {}) {
+  const range = normalizeDashboardDateRange(period, from, to);
   const [productCountRow] = await dbQuery("SELECT COUNT(*) AS c FROM products");
-  const [todayTxnRow] = await dbQuery(
-    "SELECT COUNT(*) AS tx FROM sales WHERE is_refund = 0 AND DATE(sale_time) = CURDATE()"
+  const [txnRow] = await dbQuery(
+    "SELECT COUNT(*) AS tx FROM sales WHERE is_refund = 0 AND sale_time >= ? AND sale_time < ?",
+    [range.startIso, range.endIso]
   );
-  const [monthlyRevenueRow] = await dbQuery(
-    "SELECT COALESCE(SUM(total), 0) AS revenue FROM sales WHERE is_refund = 0 AND YEAR(sale_time) = YEAR(CURDATE()) AND MONTH(sale_time) = MONTH(CURDATE())"
+  const [salesTotalRow] = await dbQuery(
+    "SELECT COALESCE(SUM(total), 0) AS total_sales FROM sales WHERE is_refund = 0 AND sale_time >= ? AND sale_time < ?",
+    [range.startIso, range.endIso]
+  );
+  const [revenueRow] = await dbQuery(
+    "SELECT COALESCE(SUM(total), 0) AS revenue FROM sales WHERE is_refund = 0 AND sale_time >= ? AND sale_time < ?",
+    [range.startIso, range.endIso]
   );
   const [cogsRow] = await dbQuery(
     `SELECT COALESCE(SUM(si.qty * si.cost_price), 0) AS cogs
      FROM sale_items si
      JOIN sales s ON s.id = si.sale_id
      WHERE s.is_refund = 0
-       AND YEAR(s.sale_time) = YEAR(CURDATE())
-       AND MONTH(s.sale_time) = MONTH(CURDATE())`
+       AND s.sale_time >= ?
+       AND s.sale_time < ?`,
+    [range.startIso, range.endIso]
   );
   const [stockCounts] = await dbQuery(
     `SELECT
@@ -679,19 +555,43 @@ async function dashboardSummaryFromDb() {
   const [invValueRow] = await dbQuery("SELECT COALESCE(SUM(quantity * cost_price), 0) AS v FROM products");
   const [deadStockRow] = await dbQuery("SELECT COUNT(*) AS c FROM products WHERE monthly_sales <= 2");
   const paymentRows = await dbQuery(
-    "SELECT payment_method AS method, COALESCE(SUM(total), 0) AS amount FROM sales WHERE is_refund = 0 GROUP BY payment_method"
+    `SELECT payment_method AS method, COALESCE(SUM(total), 0) AS amount
+     FROM sales
+     WHERE is_refund = 0
+       AND sale_time >= ?
+       AND sale_time < ?
+     GROUP BY payment_method`,
+    [range.startIso, range.endIso]
   );
   const salesRows = await dbQuery(
-    "SELECT DATE(sale_time) AS d, COALESCE(SUM(total), 0) AS amount FROM sales WHERE is_refund = 0 AND sale_time >= DATE_SUB(CURDATE(), INTERVAL 6 DAY) GROUP BY DATE(sale_time)"
+    `SELECT DATE(sale_time) AS d, COALESCE(SUM(total), 0) AS amount
+     FROM sales
+     WHERE is_refund = 0
+       AND sale_time >= ?
+       AND sale_time < ?
+     GROUP BY DATE(sale_time)`,
+    [range.startIso, range.endIso]
   );
   const topRows = await dbQuery(
-    "SELECT product_name, monthly_sales AS sold_qty, ROUND(monthly_sales * selling_price, 2) AS revenue FROM products ORDER BY monthly_sales DESC LIMIT 4"
+    `SELECT p.product_name,
+            COALESCE(SUM(si.qty), 0) AS sold_qty,
+            COALESCE(SUM(si.line_total), 0) AS revenue
+     FROM sale_items si
+     JOIN sales s ON s.id = si.sale_id
+     JOIN products p ON p.id = si.product_id
+     WHERE s.is_refund = 0
+       AND s.sale_time >= ?
+       AND s.sale_time < ?
+     GROUP BY p.id, p.product_name
+     ORDER BY sold_qty DESC, p.product_name ASC
+     LIMIT 4`,
+    [range.startIso, range.endIso]
   );
   const stockAlertRows = await dbQuery(
     "SELECT product_name, quantity AS qty, min_stock_level AS min_stock, CASE WHEN quantity <= 0 THEN 'OUT' ELSE 'LOW' END AS type FROM products WHERE quantity < min_stock_level OR quantity <= 0 ORDER BY quantity ASC LIMIT 5"
   );
 
-  const monthlyRevenue = Number(monthlyRevenueRow?.revenue || 0);
+  const monthlyRevenue = Number(revenueRow?.revenue || 0);
   const cogsMonthly = Number(cogsRow?.cogs || 0);
   const grossProfit = monthlyRevenue - cogsMonthly;
   const profitMargin = monthlyRevenue ? (grossProfit / monthlyRevenue) * 100 : 0;
@@ -701,10 +601,11 @@ async function dashboardSummaryFromDb() {
   const salesMap = new Map(
     salesRows.map((r) => [new Date(r.d).toISOString().slice(0, 10), Number(r.amount || 0)])
   );
-  const today = startOfDay();
+  const chartEnd = new Date(range.end);
+  chartEnd.setDate(chartEnd.getDate() - 1);
   const sales7d = Array.from({ length: 7 }).map((_, idx) => {
-    const date = new Date(today);
-    date.setDate(today.getDate() - (6 - idx));
+    const date = new Date(chartEnd);
+    date.setDate(chartEnd.getDate() - (6 - idx));
     const key = date.toISOString().slice(0, 10);
     return {
       day: date.toLocaleDateString("en-US", { weekday: "short" }),
@@ -722,8 +623,8 @@ async function dashboardSummaryFromDb() {
 
   return {
     total_products: Number(productCountRow?.c || 0),
-    transactions_today: Number(todayTxnRow?.tx || 0),
-    total_sales_today: Number(todayTxnRow?.tx || 0),
+    transactions_today: Number(txnRow?.tx || 0),
+    total_sales_today: Number(Number(salesTotalRow?.total_sales || 0).toFixed(2)),
     monthly_revenue: Number(monthlyRevenue.toFixed(2)),
     cogs_monthly: Number(cogsMonthly.toFixed(2)),
     gross_profit_monthly: Number(grossProfit.toFixed(2)),
@@ -755,30 +656,26 @@ async function dashboardSummaryFromDb() {
 }
 
 // ===== dashboard =====
-app.get("/api/v1/dashboard/summary", authRequired, async (req, res) => {
+app.get("/api/v1/dashboard/summary", authRequired, async (req, res, next) => {
   const period = String(req.query.period || "7d");
   const from = String(req.query.from || "");
   const to = String(req.query.to || "");
-  let summary = dashboardSummary();
-  if (isMysqlEnabled()) {
-    try {
-      summary = await dashboardSummaryFromDb();
-    } catch (err) {
-      // eslint-disable-next-line no-console
-      console.error("mysql dashboard failed, fallback in-memory:", err.message);
-    }
-  }
-  res.json({
-    data: {
-      ...summary,
-      meta: {
-        period,
-        from: from || null,
-        to: to || null,
-        generated_at: nowIso()
+  try {
+    const summary = await dashboardSummaryFromDb({ period, from, to });
+    res.json({
+      data: {
+        ...summary,
+        meta: {
+          period,
+          from: from || null,
+          to: to || null,
+          generated_at: nowIso()
+        }
       }
-    }
-  });
+    });
+  } catch (err) {
+    next(err);
+  }
 });
 
 // ===== categories =====
@@ -1025,6 +922,7 @@ app.post("/api/v1/products", authRequired, async (req, res) => {
        FROM products p LEFT JOIN categories c ON c.id = p.category_id WHERE p.id = ?`,
       [result.insertId]
     );
+    await notificationService.scanProductAlerts({ product: rows[0], sourceLink: "/products" });
     return res.status(201).json({ data: rows[0] });
   }
   if (products.some((p) => p.barcode === barcode)) return res.status(400).json({ message: "Barcode already exists" });
@@ -1050,6 +948,7 @@ app.post("/api/v1/products", authRequired, async (req, res) => {
   products.push(item);
   const cat = categories.find((c) => c.name_en === item.category_name);
   if (cat) cat.product_count += 1;
+  await notificationService.scanProductAlerts({ product: item, sourceLink: "/products", products });
   res.status(201).json({ data: item });
 });
 
@@ -1106,6 +1005,7 @@ app.put("/api/v1/products/:id", authRequired, async (req, res) => {
        FROM products p LEFT JOIN categories c ON c.id = p.category_id WHERE p.id = ?`,
       [id]
     );
+    await notificationService.scanProductAlerts({ product: rows[0], sourceLink: "/products" });
     return res.json({ data: rows[0] });
   }
   const idx = products.findIndex((p) => p.id === id);
@@ -1124,6 +1024,7 @@ app.put("/api/v1/products/:id", authRequired, async (req, res) => {
     min_stock_level: body.min_stock_level !== undefined ? Math.max(0, toNumber(body.min_stock_level, products[idx].min_stock_level)) : products[idx].min_stock_level,
     updated_at: nowIso()
   };
+  await notificationService.scanProductAlerts({ product: products[idx], sourceLink: "/products", products });
   res.json({ data: products[idx] });
 });
 
@@ -1318,6 +1219,7 @@ app.post("/api/v1/inventory/receive", authRequired, async (req, res) => {
       [product.id, qty, String(reason || "Supplier receiving"), product.store_code, req.user.full_name]
     );
     const updated = (await dbQuery("SELECT * FROM products WHERE id = ?", [product.id]))[0];
+    await notificationService.scanProductAlerts({ product: updated, sourceLink: "/inventory-health" });
     return res.status(201).json({ data: { product: updated, movement: { id: move.insertId } } });
   }
   const product = products.find((p) => p.barcode === String(barcode).trim());
@@ -1352,8 +1254,9 @@ app.post("/api/v1/inventory/receive", authRequired, async (req, res) => {
   };
   stockMovements.unshift(movement);
   if (product.quantity < product.min_stock_level) {
-    notifyFromInventory(product, "LOW_STOCK", `Stock is below minimum threshold (${product.quantity}/${product.min_stock_level}).`);
+    await notifyFromInventory(product, "LOW_STOCK", `Stock is below minimum threshold (${product.quantity}/${product.min_stock_level}).`);
   }
+  await notificationService.scanProductAlerts({ product, sourceLink: "/inventory-health", products });
   return res.status(201).json({ data: { product, movement } });
 });
 
@@ -1377,6 +1280,7 @@ app.post("/api/v1/inventory/adjust", authRequired, async (req, res) => {
       [product.id, `ADJUST_${nextAction}`, qty, String(reason), product.store_code, String(approved_by || req.user.full_name)]
     );
     const updated = (await dbQuery("SELECT * FROM products WHERE id = ?", [product.id]))[0];
+    await notificationService.scanProductAlerts({ product: updated, sourceLink: "/inventory-health" });
     return res.status(201).json({ data: { product: updated, movement: { id: move.insertId } } });
   }
   const product = products.find((p) => p.barcode === String(barcode).trim());
@@ -1402,8 +1306,9 @@ app.post("/api/v1/inventory/adjust", authRequired, async (req, res) => {
   stockMovements.unshift(movement);
 
   if (product.quantity < product.min_stock_level) {
-    notifyFromInventory(product, "LOW_STOCK", `Stock is below minimum threshold (${product.quantity}/${product.min_stock_level}).`);
+    await notifyFromInventory(product, "LOW_STOCK", `Stock is below minimum threshold (${product.quantity}/${product.min_stock_level}).`);
   }
+  await notificationService.scanProductAlerts({ product, sourceLink: "/inventory-health", products });
 
   return res.status(201).json({ data: { product, movement } });
 });
@@ -1429,16 +1334,18 @@ app.post("/api/v1/inventory/adjust/bulk", authRequired, async (req, res) => {
          VALUES (?, ?, ?, ?, ?, ?)`,
         [product.id, `BULK_${action}`, qty, String(r.reason || "BULK"), product.store_code, String(r.approved_by || req.user.full_name)]
       );
+      const updated = (await dbQuery("SELECT * FROM products WHERE id = ?", [product.id]))[0];
+      await notificationService.scanProductAlerts({ product: updated, sourceLink: "/inventory-health" });
       applied += 1;
     }
     return res.json({ data: { applied } });
   }
   let applied = 0;
-  rows.forEach((r) => {
+  for (const r of rows) {
     const product = products.find((p) => p.barcode === String(r.barcode || "").trim());
-    if (!product) return;
+    if (!product) continue;
     const qty = Math.max(0, toNumber(r.quantity, 0));
-    if (qty < 1) return;
+    if (qty < 1) continue;
     const action = String(r.action || "DECREASE").toUpperCase();
     if (action === "INCREASE") product.quantity += qty;
     else product.quantity = Math.max(0, product.quantity - qty);
@@ -1455,19 +1362,135 @@ app.post("/api/v1/inventory/adjust/bulk", authRequired, async (req, res) => {
       reason: String(r.reason || "BULK"),
       approved_by: String(r.approved_by || req.user.full_name)
     });
+    await notificationService.scanProductAlerts({ product, sourceLink: "/inventory-health", products });
     applied += 1;
-  });
+  }
   res.json({ data: { applied } });
 });
 
 // ===== sales =====
+app.get("/api/v1/bank-transfer-settings", authRequired, async (_req, res) => {
+  if (isMysqlEnabled()) {
+    const rows = await dbQuery("SELECT * FROM bank_transfer_settings ORDER BY id DESC");
+    return res.json({ data: rows });
+  }
+  return res.json({ data: bankTransferSettings });
+});
+
+app.post("/api/v1/bank-transfer-settings", authRequired, async (req, res) => {
+  const payload = {
+    qr_image_url: String(req.body?.qr_image_url || "").trim(),
+    bank_name: String(req.body?.bank_name || "").trim(),
+    account_name: String(req.body?.account_name || "").trim(),
+    account_number: String(req.body?.account_number || "").trim(),
+    notes: String(req.body?.notes || "").trim()
+  };
+  const touchQrAudit = Object.prototype.hasOwnProperty.call(req.body || {}, "qr_image_url");
+
+  if (isMysqlEnabled()) {
+    const inserted = await dbQuery(
+      `INSERT INTO bank_transfer_settings
+       (qr_image_url, bank_name, account_name, account_number, notes, last_uploaded_by, last_uploaded_at, updated_by, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW())`,
+      [
+        payload.qr_image_url,
+        payload.bank_name,
+        payload.account_name,
+        payload.account_number,
+        payload.notes,
+        touchQrAudit ? req.user.full_name : null,
+        touchQrAudit ? nowIso() : null,
+        req.user.full_name
+      ]
+    );
+    const row = (await dbQuery("SELECT * FROM bank_transfer_settings WHERE id = ?", [inserted.insertId]))[0];
+    return res.status(201).json({ data: row });
+  }
+
+  const row = {
+    id: Date.now(),
+    ...payload,
+    last_uploaded_by: touchQrAudit ? req.user.full_name : "",
+    last_uploaded_at: touchQrAudit ? nowIso() : "",
+    updated_by: req.user.full_name,
+    updated_at: nowIso()
+  };
+  bankTransferSettings.unshift(row);
+  return res.status(201).json({ data: row });
+});
+
+app.put("/api/v1/bank-transfer-settings/:id", authRequired, async (req, res) => {
+  const id = toNumber(req.params.id, -1);
+  const payload = {
+    qr_image_url: String(req.body?.qr_image_url || "").trim(),
+    bank_name: String(req.body?.bank_name || "").trim(),
+    account_name: String(req.body?.account_name || "").trim(),
+    account_number: String(req.body?.account_number || "").trim(),
+    notes: String(req.body?.notes || "").trim()
+  };
+  const touchQrAudit = Object.prototype.hasOwnProperty.call(req.body || {}, "qr_image_url");
+
+  if (isMysqlEnabled()) {
+    await dbQuery(
+      `UPDATE bank_transfer_settings
+       SET qr_image_url = ?, bank_name = ?, account_name = ?, account_number = ?, notes = ?,
+           last_uploaded_by = CASE WHEN ? THEN ? ELSE last_uploaded_by END,
+           last_uploaded_at = CASE WHEN ? THEN NOW() ELSE last_uploaded_at END,
+           updated_by = ?, updated_at = NOW()
+       WHERE id = ?`,
+      [
+        payload.qr_image_url,
+        payload.bank_name,
+        payload.account_name,
+        payload.account_number,
+        payload.notes,
+        touchQrAudit,
+        req.user.full_name,
+        touchQrAudit,
+        req.user.full_name,
+        id
+      ]
+    );
+    const row = (await dbQuery("SELECT * FROM bank_transfer_settings WHERE id = ?", [id]))[0];
+    if (!row) return res.status(404).json({ message: "Bank transfer setting not found" });
+    return res.json({ data: row });
+  }
+
+  const target = bankTransferSettings.find((entry) => Number(entry.id) === id);
+  if (!target) return res.status(404).json({ message: "Bank transfer setting not found" });
+  Object.assign(target, payload, {
+    last_uploaded_by: touchQrAudit ? req.user.full_name : target.last_uploaded_by,
+    last_uploaded_at: touchQrAudit ? nowIso() : target.last_uploaded_at,
+    updated_by: req.user.full_name,
+    updated_at: nowIso()
+  });
+  return res.json({ data: target });
+});
+
+app.delete("/api/v1/bank-transfer-settings/:id", authRequired, async (req, res) => {
+  const id = toNumber(req.params.id, -1);
+
+  if (isMysqlEnabled()) {
+    const existing = (await dbQuery("SELECT id FROM bank_transfer_settings WHERE id = ?", [id]))[0];
+    if (!existing) return res.status(404).json({ message: "Bank transfer setting not found" });
+    await dbQuery("DELETE FROM bank_transfer_settings WHERE id = ?", [id]);
+    return res.json({ data: { ok: true } });
+  }
+
+  const index = bankTransferSettings.findIndex((entry) => Number(entry.id) === id);
+  if (index === -1) return res.status(404).json({ message: "Bank transfer setting not found" });
+  bankTransferSettings.splice(index, 1);
+  return res.json({ data: { ok: true } });
+});
+
 app.get("/api/v1/sales", authRequired, async (req, res) => {
   const limit = clamp(toNumber(req.query.limit, 20), 1, 100);
   if (isMysqlEnabled()) {
     const rows = await dbQuery(
-      `SELECT id, sale_code AS sale_id, sale_time, payment_method, customer_name, customer_phone,
+      `SELECT id, sale_code AS sale_id, sale_time, payment_method, payment_status, customer_name, customer_phone,
               subtotal, discount_pct, discount_amount, tax_pct, tax_amount, total, total_khr, paid_amount,
-              change_amount AS \`change\`, sync_status, is_refund, refund_reason, created_by
+              change_amount AS \`change\`, transaction_reference, payment_proof_url, paid_at, verified_by, verified_at,
+              sync_status, is_refund, refund_reason, created_by
        FROM sales
        ORDER BY id DESC
        LIMIT ?`,
@@ -1497,6 +1520,9 @@ app.post("/api/v1/sales", authRequired, async (req, res) => {
   if (!["CASH", "BANK_TRANSFER"].includes(payment_method)) {
     return res.status(400).json({ message: "payment_method must be CASH or BANK_TRANSFER" });
   }
+  const payment_status = payment_method === "BANK_TRANSFER" ? "PENDING" : "PAID";
+  const transaction_reference = String(body.transaction_reference || "").trim();
+  const payment_proof_url = String(body.payment_proof_url || "").trim();
 
   const normalizedItems = [];
   if (isMysqlEnabled()) {
@@ -1528,18 +1554,21 @@ app.post("/api/v1/sales", authRequired, async (req, res) => {
     const total = Number((taxable + tax_amount).toFixed(2));
     const khr_rate = Math.max(1, toNumber(body.khr_rate, 4100));
     const total_khr = Number((total * khr_rate).toFixed(0));
-    const paid_amount = Number(toNumber(body.paid_amount, total).toFixed(2));
-    if (paid_amount < total) return res.status(400).json({ message: "paid_amount is less than total" });
-    const change = Number((paid_amount - total).toFixed(2));
+    const paid_amount = payment_method === "BANK_TRANSFER"
+      ? 0
+      : Number(toNumber(body.paid_amount, total).toFixed(2));
+    if (payment_method === "CASH" && paid_amount < total) return res.status(400).json({ message: "paid_amount is less than total" });
+    const change = payment_method === "BANK_TRANSFER" ? 0 : Number((paid_amount - total).toFixed(2));
 
     const saleCode = `S${Date.now()}`;
     const saleInsert = await dbQuery(
       `INSERT INTO sales
-      (sale_code, sale_time, payment_method, customer_name, customer_phone, subtotal, discount_pct, discount_amount, tax_pct, tax_amount, total, khr_rate, total_khr, paid_amount, change_amount, sync_status, is_refund, created_by)
-      VALUES (?, NOW(), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'SYNCED', 0, ?)`,
+      (sale_code, sale_time, payment_method, payment_status, customer_name, customer_phone, subtotal, discount_pct, discount_amount, tax_pct, tax_amount, total, khr_rate, total_khr, paid_amount, change_amount, transaction_reference, payment_proof_url, paid_at, verified_by, verified_at, sync_status, is_refund, created_by)
+      VALUES (?, NOW(), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'SYNCED', FALSE, ?)`,
       [
         saleCode,
         payment_method,
+        payment_status,
         String(body.customer_name || "-"),
         String(body.customer_phone || "-"),
         Number(subtotal.toFixed(2)),
@@ -1552,6 +1581,11 @@ app.post("/api/v1/sales", authRequired, async (req, res) => {
         total_khr,
         paid_amount,
         change,
+        transaction_reference || null,
+        payment_proof_url || null,
+        payment_method === "BANK_TRANSFER" ? null : nowIso(),
+        payment_method === "BANK_TRANSFER" ? null : req.user.full_name,
+        payment_method === "BANK_TRANSFER" ? null : nowIso(),
         req.user.full_name
       ]
     );
@@ -1566,6 +1600,8 @@ app.post("/api/v1/sales", authRequired, async (req, res) => {
         "UPDATE products SET quantity = GREATEST(0, quantity - ?), monthly_sales = monthly_sales + ? WHERE id = ?",
         [i.qty, i.qty, i.product_id]
       );
+      const updatedProduct = (await dbQuery("SELECT * FROM products WHERE id = ?", [i.product_id]))[0];
+      await notificationService.scanProductAlerts({ product: updatedProduct, sourceLink: "/inventory-health" });
     }
 
     const sale = {
@@ -1573,6 +1609,7 @@ app.post("/api/v1/sales", authRequired, async (req, res) => {
       sale_time: nowIso(),
       items: normalizedItems,
       payment_method,
+      payment_status,
       customer_name: String(body.customer_name || "-"),
       customer_phone: String(body.customer_phone || "-"),
       subtotal: Number(subtotal.toFixed(2)),
@@ -1584,6 +1621,11 @@ app.post("/api/v1/sales", authRequired, async (req, res) => {
       total_khr,
       paid_amount,
       change,
+      transaction_reference,
+      payment_proof_url,
+      paid_at: payment_method === "BANK_TRANSFER" ? null : nowIso(),
+      verified_by: payment_method === "BANK_TRANSFER" ? null : req.user.full_name,
+      verified_at: payment_method === "BANK_TRANSFER" ? null : nowIso(),
       sync_status: "SYNCED",
       is_refund: false,
       created_by: req.user.full_name
@@ -1613,10 +1655,11 @@ app.post("/api/v1/sales", authRequired, async (req, res) => {
     p.quantity = Math.max(0, p.quantity - i.qty);
     p.monthly_sales += i.qty;
     p.updated_at = nowIso();
-    if (p.quantity < p.min_stock_level) {
-      notifyFromInventory(p, "LOW_STOCK", `Stock is below minimum threshold (${p.quantity}/${p.min_stock_level}).`);
-    }
   });
+  for (const i of normalizedItems) {
+    const p = products.find((x) => x.id === i.product_id);
+    await notificationService.scanProductAlerts({ product: p, sourceLink: "/inventory-health", products });
+  }
 
   const subtotal = normalizedItems.reduce((sum, i) => sum + i.line_total, 0);
   const discount_pct = clamp(toNumber(body.discount_pct, 0), 0, 100);
@@ -1627,15 +1670,16 @@ app.post("/api/v1/sales", authRequired, async (req, res) => {
   const total = Number((taxable + tax_amount).toFixed(2));
   const khr_rate = Math.max(1, toNumber(body.khr_rate, 4100));
   const total_khr = Number((total * khr_rate).toFixed(0));
-  const paid_amount = Number(toNumber(body.paid_amount, total).toFixed(2));
-  if (paid_amount < total) return res.status(400).json({ message: "paid_amount is less than total" });
-  const change = Number((paid_amount - total).toFixed(2));
+  const paid_amount = payment_method === "BANK_TRANSFER" ? 0 : Number(toNumber(body.paid_amount, total).toFixed(2));
+  if (payment_method === "CASH" && paid_amount < total) return res.status(400).json({ message: "paid_amount is less than total" });
+  const change = payment_method === "BANK_TRANSFER" ? 0 : Number((paid_amount - total).toFixed(2));
 
   const sale = {
     sale_id: ++saleIdSeq,
     sale_time: nowIso(),
     items: normalizedItems,
     payment_method,
+    payment_status,
     customer_name: String(body.customer_name || "-"),
     customer_phone: String(body.customer_phone || "-"),
     subtotal: Number(subtotal.toFixed(2)),
@@ -1647,12 +1691,78 @@ app.post("/api/v1/sales", authRequired, async (req, res) => {
     total_khr,
     paid_amount,
     change,
+    transaction_reference,
+    payment_proof_url,
+    paid_at: payment_method === "BANK_TRANSFER" ? null : nowIso(),
+    verified_by: payment_method === "BANK_TRANSFER" ? null : req.user.full_name,
+    verified_at: payment_method === "BANK_TRANSFER" ? null : nowIso(),
     sync_status: "SYNCED",
     is_refund: false,
     created_by: req.user.full_name
   };
   sales.unshift(sale);
   res.status(201).json({ data: sale });
+});
+
+app.patch("/api/v1/sales/:saleId/mark-paid", authRequired, async (req, res) => {
+  const saleRef = String(req.params.saleId || "").trim();
+  const transaction_reference = String(req.body?.transaction_reference || "").trim();
+
+  if (isMysqlEnabled()) {
+    const rows = await dbQuery(
+      "SELECT id, sale_code, payment_method, payment_status, total, customer_name, customer_phone FROM sales WHERE (sale_code = ? OR id::text = ?) AND is_refund = 0 LIMIT 1",
+      [saleRef, saleRef]
+    );
+    const sale = rows[0];
+    if (!sale) return res.status(404).json({ message: "Sale not found" });
+    if (sale.payment_method !== "BANK_TRANSFER") return res.status(400).json({ message: "Only BANK_TRANSFER sales can be marked as paid" });
+    if (sale.payment_status === "PAID") return res.status(400).json({ message: "Sale is already marked as paid" });
+
+    await dbQuery(
+      `UPDATE sales
+       SET payment_status = 'PAID',
+           paid_amount = total,
+           change_amount = 0,
+           paid_at = NOW(),
+           verified_by = ?,
+           verified_at = NOW(),
+           transaction_reference = COALESCE(NULLIF(?, ''), transaction_reference)
+       WHERE id = ?`,
+      [req.user.full_name, transaction_reference, sale.id]
+    );
+    const updated = (await dbQuery(
+      `SELECT sale_code AS sale_id, sale_time, payment_method, payment_status, customer_name, customer_phone,
+              subtotal, discount_pct, discount_amount, tax_pct, tax_amount, total, total_khr, paid_amount,
+              change_amount AS \`change\`, transaction_reference, payment_proof_url, paid_at, verified_by, verified_at,
+              sync_status, is_refund, refund_reason, created_by
+       FROM sales
+       WHERE id = ?`,
+      [sale.id]
+    ))[0];
+    const items = await dbQuery(
+      `SELECT si.product_id, p.product_name, p.barcode, si.qty, si.unit_price, si.cost_price, si.line_total
+       FROM sale_items si
+       JOIN products p ON p.id = si.product_id
+       WHERE si.sale_id = ?`,
+      [sale.id]
+    );
+    updated.items = items;
+    return res.json({ data: updated });
+  }
+
+  const sale = sales.find((entry) => String(entry.sale_id) === saleRef && !entry.is_refund);
+  if (!sale) return res.status(404).json({ message: "Sale not found" });
+  if (sale.payment_method !== "BANK_TRANSFER") return res.status(400).json({ message: "Only BANK_TRANSFER sales can be marked as paid" });
+  if (sale.payment_status === "PAID") return res.status(400).json({ message: "Sale is already marked as paid" });
+
+  sale.payment_status = "PAID";
+  sale.paid_amount = Number(sale.total || 0);
+  sale.change = 0;
+  sale.paid_at = nowIso();
+  sale.verified_by = req.user.full_name;
+  sale.verified_at = nowIso();
+  if (transaction_reference) sale.transaction_reference = transaction_reference;
+  return res.json({ data: sale });
 });
 
 app.post("/api/v1/sales/refund", authRequired, async (req, res) => {
@@ -1677,7 +1787,7 @@ app.post("/api/v1/sales/refund", authRequired, async (req, res) => {
     const refundInsert = await dbQuery(
       `INSERT INTO sales
       (sale_code, sale_time, payment_method, customer_name, customer_phone, subtotal, discount_pct, discount_amount, tax_pct, tax_amount, total, khr_rate, total_khr, paid_amount, change_amount, sync_status, is_refund, refund_reason, source_sale_id, created_by)
-      VALUES (?, NOW(), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 'SYNCED', 1, ?, ?, ?)`,
+      VALUES (?, NOW(), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 'SYNCED', TRUE, ?, ?, ?)`,
       [
         refundCode,
         source.payment_method,
@@ -1857,7 +1967,8 @@ function computeReport(type) {
     return products.map((p) => {
       const avg_day = Number((p.monthly_sales / 30).toFixed(2));
       const lead = 7;
-      const reorder_level = Number((avg_day * lead + 5).toFixed(2));
+      const forecast_total = Number((avg_day * 30).toFixed(2));
+      const reorder_level = Number((forecast_total * 1.2).toFixed(2));
       return {
         product: p.product_name,
         avg_day,
@@ -1865,8 +1976,8 @@ function computeReport(type) {
         reorder_level,
         stock: p.quantity,
         suggest_qty: Math.max(0, Math.ceil(reorder_level - p.quantity)),
-        selected_model: p.id % 2 === 0 ? "ARIMA" : "PROPHET",
-        confidence: "80-95%"
+        selected_model: "PROPHET",
+        confidence: "Prophet 80% interval"
       };
     });
   }
@@ -1924,7 +2035,149 @@ function computeReport(type) {
   return [];
 }
 
-async function computeReportFromDb(type) {
+function buildSalesReportFilter({ from = "", to = "" } = {}, alias = "s") {
+  const clauses = [`${alias}.is_refund = 0`];
+  const params = [];
+  if (from) {
+    clauses.push(`DATE(${alias}.sale_time) >= ?`);
+    params.push(from);
+  }
+  if (to) {
+    clauses.push(`DATE(${alias}.sale_time) <= ?`);
+    params.push(to);
+  }
+  return {
+    where: `WHERE ${clauses.join(" AND ")}`,
+    params
+  };
+}
+
+function buildDateColumnFilter({ from = "", to = "" } = {}, column) {
+  const clauses = [];
+  const params = [];
+  if (from) {
+    clauses.push(`DATE(${column}) >= ?`);
+    params.push(from);
+  }
+  if (to) {
+    clauses.push(`DATE(${column}) <= ?`);
+    params.push(to);
+  }
+  return {
+    where: clauses.length ? `WHERE ${clauses.join(" AND ")}` : "",
+    params
+  };
+}
+
+function shiftDate(value, days) {
+  if (!value) return "";
+  const date = new Date(`${value}T00:00:00Z`);
+  if (Number.isNaN(date.getTime())) return "";
+  date.setUTCDate(date.getUTCDate() + days);
+  return date.toISOString().slice(0, 10);
+}
+
+function buildPreviousPeriodFilters({ from = "", to = "" } = {}) {
+  if (!from || !to) return null;
+  const start = new Date(`${from}T00:00:00Z`);
+  const end = new Date(`${to}T00:00:00Z`);
+  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime()) || end < start) return null;
+  const diffDays = Math.round((end.getTime() - start.getTime()) / 86400000) + 1;
+  return {
+    from: shiftDate(from, -diffDays),
+    to: shiftDate(to, -diffDays)
+  };
+}
+
+function summarizeReportRows(type, rows = []) {
+  const safeRows = Array.isArray(rows) ? rows : [];
+  if (type.startsWith("sales-")) {
+    const revenue = safeRows.reduce((sum, row) => sum + Number(row.amount || 0), 0);
+    const cogs = safeRows.reduce((sum, row) => sum + Number(row.cogs || 0), 0);
+    const units = safeRows.reduce((sum, row) => sum + Number(row.units || 0), 0);
+    return {
+      primary_label: "Revenue",
+      primary_value: Number(revenue.toFixed(2)),
+      secondary_label: "Units",
+      secondary_value: Number(units.toFixed(2)),
+      tertiary_label: "Gross Profit",
+      tertiary_value: Number((revenue - cogs).toFixed(2))
+    };
+  }
+  if (type === "payment-method") {
+    const total = safeRows.reduce((sum, row) => sum + Number(row.amount || 0), 0);
+    return {
+      primary_label: "Revenue",
+      primary_value: Number(total.toFixed(2)),
+      secondary_label: "Methods",
+      secondary_value: safeRows.length,
+      tertiary_label: "Top Share",
+      tertiary_value: Number(Math.max(0, ...safeRows.map((row) => Number(row.pct || 0))).toFixed(2))
+    };
+  }
+  if (type === "category-contrib") {
+    const total = safeRows.reduce((sum, row) => sum + Number(row.revenue || 0), 0);
+    return {
+      primary_label: "Revenue",
+      primary_value: Number(total.toFixed(2)),
+      secondary_label: "Categories",
+      secondary_value: safeRows.length,
+      tertiary_label: "Top Share",
+      tertiary_value: Number(Math.max(0, ...safeRows.map((row) => Number(row.contribution_pct || 0))).toFixed(2))
+    };
+  }
+  if (type === "stock-low" || type === "stock-expiry") {
+    const totalRisk = safeRows.reduce((sum, row) => sum + Number(row.value_at_risk || 0), 0);
+    return {
+      primary_label: "Items",
+      primary_value: safeRows.length,
+      secondary_label: "Value At Risk",
+      secondary_value: Number(totalRisk.toFixed(2)),
+      tertiary_label: "Max Risk",
+      tertiary_value: Number(Math.max(0, ...safeRows.map((row) => Number(row.value_at_risk || 0))).toFixed(2))
+    };
+  }
+  if (type === "ai-reorder") {
+    const totalSuggest = safeRows.reduce((sum, row) => sum + Number(row.suggest_qty || 0), 0);
+    return {
+      primary_label: "Products",
+      primary_value: safeRows.length,
+      secondary_label: "Suggested Qty",
+      secondary_value: totalSuggest,
+      tertiary_label: "Max Reorder",
+      tertiary_value: Math.max(0, ...safeRows.map((row) => Number(row.suggest_qty || 0)))
+    };
+  }
+  return {
+    primary_label: "Rows",
+    primary_value: safeRows.length,
+    secondary_label: "Rows",
+    secondary_value: safeRows.length,
+    tertiary_label: "Rows",
+    tertiary_value: safeRows.length
+  };
+}
+
+function buildComparison(type, currentRows, previousRows, currentFilters) {
+  const previousFilters = buildPreviousPeriodFilters(currentFilters);
+  if (!previousFilters) return null;
+  const currentSummary = summarizeReportRows(type, currentRows);
+  const previousSummary = summarizeReportRows(type, previousRows);
+  const currentValue = Number(currentSummary.primary_value || 0);
+  const previousValue = Number(previousSummary.primary_value || 0);
+  const delta = Number((currentValue - previousValue).toFixed(2));
+  const deltaPct = previousValue ? Number((((currentValue - previousValue) / previousValue) * 100).toFixed(2)) : null;
+  return {
+    previous_from: previousFilters.from,
+    previous_to: previousFilters.to,
+    current: currentSummary,
+    previous: previousSummary,
+    delta,
+    delta_pct: deltaPct
+  };
+}
+
+async function computeReportFromDb(type, filters = {}) {
   if (type === "stock-low") {
     return dbQuery(
       `SELECT p.product_name AS product, p.barcode, p.quantity AS qty, p.min_stock_level AS min,
@@ -1936,6 +2189,7 @@ async function computeReportFromDb(type) {
     );
   }
   if (type === "stock-expiry") {
+    const expiryFilter = buildDateColumnFilter(filters, "p.expiry_date");
     return dbQuery(
       `SELECT p.product_name AS product, p.barcode, p.quantity AS qty, p.expiry_date AS expiry,
               DATEDIFF(p.expiry_date, CURDATE()) AS days_left, COALESCE(c.name_en, 'General') AS category,
@@ -1943,30 +2197,80 @@ async function computeReportFromDb(type) {
        FROM products p
        LEFT JOIN categories c ON c.id = p.category_id
        WHERE p.expiry_date IS NOT NULL
-       ORDER BY p.expiry_date ASC`
+       ${expiryFilter.where ? `AND ${expiryFilter.where.replace(/^WHERE\s+/u, "")}` : ""}
+       ORDER BY p.expiry_date ASC`,
+      expiryFilter.params
     );
   }
   if (type === "payment-method") {
+    const salesFilter = buildSalesReportFilter(filters);
     return dbQuery(
       `SELECT payment_method AS method, ROUND(SUM(total),2) AS amount,
-              ROUND(100 * SUM(total) / NULLIF((SELECT SUM(total) FROM sales WHERE is_refund = 0),0),2) AS pct
+              ROUND(
+                100 * SUM(total) / NULLIF((
+                  SELECT SUM(total)
+                  FROM sales s2
+                  ${salesFilter.where.replace(/s\./g, "s2.")}
+                ),0),2
+              ) AS pct
        FROM sales
-       WHERE is_refund = 0
-       GROUP BY payment_method`
+       ${salesFilter.where.replace(/s\./g, "")}
+       GROUP BY payment_method`,
+      [...salesFilter.params, ...salesFilter.params]
     );
   }
   if (type === "sales-daily") {
+    const salesFilter = buildSalesReportFilter(filters);
     return dbQuery(
       `SELECT DATE(s.sale_time) AS date,
-              COUNT(DISTINCT s.id) AS txns,
-              ROUND(COALESCE(SUM(si.qty),0),2) AS units,
+              COUNT(*) AS txns,
+              ROUND(COALESCE(SUM(items.units),0),2) AS units,
               ROUND(COALESCE(SUM(s.total),0),2) AS amount,
-              ROUND(COALESCE(SUM(si.qty * si.cost_price),0),2) AS cogs
+              ROUND(COALESCE(SUM(items.cogs),0),2) AS cogs,
+              ROUND(COALESCE(SUM(CASE WHEN s.payment_method = 'CASH' THEN s.total ELSE 0 END),0),2) AS cash,
+              ROUND(COALESCE(SUM(CASE WHEN s.payment_method = 'BANK_TRANSFER' THEN s.total ELSE 0 END),0),2) AS bank_transfer
        FROM sales s
-       LEFT JOIN sale_items si ON si.sale_id = s.id
-       WHERE s.is_refund = 0
+       LEFT JOIN (
+         SELECT sale_id,
+                SUM(qty) AS units,
+                SUM(qty * cost_price) AS cogs
+         FROM sale_items
+         GROUP BY sale_id
+       ) items ON items.sale_id = s.id
+       ${salesFilter.where}
        GROUP BY DATE(s.sale_time)
        ORDER BY DATE(s.sale_time) DESC`
+    , salesFilter.params).then((rows) =>
+      rows.map((r) => {
+        const gross = Number(r.amount || 0) - Number(r.cogs || 0);
+        return {
+          ...r,
+          gross_profit: Number(gross.toFixed(2)),
+          margin_pct: Number(r.amount ? ((gross / Number(r.amount)) * 100).toFixed(2) : 0)
+        };
+      })
+    );
+  }
+  if (type === "sales-monthly") {
+    const salesFilter = buildSalesReportFilter(filters);
+    return dbQuery(
+      `SELECT DATE_FORMAT(s.sale_time, '%Y-%m') AS period,
+              COUNT(*) AS txns,
+              ROUND(COALESCE(SUM(items.units),0),2) AS units,
+              ROUND(COALESCE(SUM(s.total),0),2) AS amount,
+              ROUND(COALESCE(SUM(items.cogs),0),2) AS cogs
+       FROM sales s
+       LEFT JOIN (
+         SELECT sale_id,
+                SUM(qty) AS units,
+                SUM(qty * cost_price) AS cogs
+         FROM sale_items
+         GROUP BY sale_id
+       ) items ON items.sale_id = s.id
+       ${salesFilter.where}
+       GROUP BY DATE_FORMAT(s.sale_time, '%Y-%m')
+       ORDER BY period DESC`,
+      salesFilter.params
     ).then((rows) =>
       rows.map((r) => {
         const gross = Number(r.amount || 0) - Number(r.cogs || 0);
@@ -1974,10 +2278,126 @@ async function computeReportFromDb(type) {
           ...r,
           gross_profit: Number(gross.toFixed(2)),
           margin_pct: Number(r.amount ? ((gross / Number(r.amount)) * 100).toFixed(2) : 0),
-          cash: 0,
-          bank_transfer: 0
+          growth_pct: 0
         };
       })
+    );
+  }
+  if (type === "sales-quarterly") {
+    const salesFilter = buildSalesReportFilter(filters);
+    return dbQuery(
+      `SELECT CONCAT(YEAR(s.sale_time), '-Q', QUARTER(s.sale_time)) AS period,
+              COUNT(*) AS txns,
+              ROUND(COALESCE(SUM(items.units),0),2) AS units,
+              ROUND(COALESCE(SUM(s.total),0),2) AS amount,
+              ROUND(COALESCE(SUM(items.cogs),0),2) AS cogs
+       FROM sales s
+       LEFT JOIN (
+         SELECT sale_id,
+                SUM(qty) AS units,
+                SUM(qty * cost_price) AS cogs
+         FROM sale_items
+         GROUP BY sale_id
+       ) items ON items.sale_id = s.id
+       ${salesFilter.where}
+       GROUP BY YEAR(s.sale_time), QUARTER(s.sale_time)
+       ORDER BY YEAR(s.sale_time) DESC, QUARTER(s.sale_time) DESC`,
+      salesFilter.params
+    ).then((rows) =>
+      rows.map((r) => {
+        const gross = Number(r.amount || 0) - Number(r.cogs || 0);
+        return {
+          ...r,
+          gross_profit: Number(gross.toFixed(2)),
+          margin_pct: Number(r.amount ? ((gross / Number(r.amount)) * 100).toFixed(2) : 0),
+          growth_pct: 0
+        };
+      })
+    );
+  }
+  if (type === "sales-annual") {
+    const salesFilter = buildSalesReportFilter(filters);
+    return dbQuery(
+      `SELECT CAST(YEAR(s.sale_time) AS CHAR) AS period,
+              COUNT(*) AS txns,
+              ROUND(COALESCE(SUM(items.units),0),2) AS units,
+              ROUND(COALESCE(SUM(s.total),0),2) AS amount,
+              ROUND(COALESCE(SUM(items.cogs),0),2) AS cogs
+       FROM sales s
+       LEFT JOIN (
+         SELECT sale_id,
+                SUM(qty) AS units,
+                SUM(qty * cost_price) AS cogs
+         FROM sale_items
+         GROUP BY sale_id
+       ) items ON items.sale_id = s.id
+       ${salesFilter.where}
+       GROUP BY YEAR(s.sale_time)
+       ORDER BY YEAR(s.sale_time) DESC`,
+      salesFilter.params
+    ).then((rows) =>
+      rows.map((r) => {
+        const gross = Number(r.amount || 0) - Number(r.cogs || 0);
+        return {
+          ...r,
+          gross_profit: Number(gross.toFixed(2)),
+          margin_pct: Number(r.amount ? ((gross / Number(r.amount)) * 100).toFixed(2) : 0),
+          growth_pct: 0
+        };
+      })
+    );
+  }
+  if (type === "category-contrib") {
+    const salesFilter = buildSalesReportFilter(filters);
+    return dbQuery(
+      `SELECT COALESCE(c.name_en, 'General') AS category,
+              ROUND(SUM(si.line_total),2) AS revenue,
+              ROUND(
+                100 * SUM(si.line_total) / NULLIF((
+                  SELECT SUM(si2.line_total)
+                  FROM sales s2
+                  JOIN sale_items si2 ON si2.sale_id = s2.id
+                  ${salesFilter.where.replace(/s\./g, "s2.")}
+                ),0),2
+              ) AS contribution_pct
+       FROM sales s
+       JOIN sale_items si ON si.sale_id = s.id
+       JOIN products p ON p.id = si.product_id
+       LEFT JOIN categories c ON c.id = p.category_id
+       ${salesFilter.where}
+       GROUP BY COALESCE(c.name_en, 'General')
+       ORDER BY revenue DESC`,
+      [...salesFilter.params, ...salesFilter.params]
+    );
+  }
+  if (type === "ai-reorder") {
+    const forecastFilter = buildDateColumnFilter(filters, "created_at");
+    return dbQuery(
+      `SELECT p.product_name AS product,
+              ROUND(COALESCE(afr.avg_daily_demand, p.monthly_sales / 30),2) AS avg_day,
+              7 AS lead,
+              ROUND(COALESCE(afr.reorder_level, p.monthly_sales * 1.2),2) AS reorder_level,
+              p.quantity AS stock,
+              GREATEST(0, CEIL(COALESCE(afr.reorder_level, p.monthly_sales * 1.2) - p.quantity)) AS suggest_qty,
+              COALESCE(afr.selected_model, 'PROPHET') AS selected_model,
+              CASE
+                WHEN afr.id IS NULL THEN 'Estimated from product monthly sales'
+                ELSE CONCAT('MAPE ', ROUND(afr.mape, 2), '%')
+              END AS confidence
+       FROM products p
+       LEFT JOIN (
+         SELECT afr1.*
+         FROM ai_forecast_runs afr1
+         JOIN (
+           SELECT product_id, MAX(id) AS max_id
+           FROM ai_forecast_runs
+           ${forecastFilter.where}
+           GROUP BY product_id
+         ) latest ON latest.max_id = afr1.id
+       ) afr ON afr.product_id = p.id
+       WHERE p.status = 'ACTIVE'
+       ORDER BY suggest_qty DESC, p.product_name ASC`,
+      forecastFilter.params
     );
   }
   return [];
@@ -1988,14 +2408,26 @@ app.get("/api/v1/reports/run", authRequired, async (req, res) => {
   const from = String(req.query.from || "");
   const to = String(req.query.to || "");
   const compare_prev = String(req.query.compare_prev || "false") === "true";
-  const rows = isMysqlEnabled() ? await computeReportFromDb(type) : computeReport(type);
+  const filters = { from, to, compare_prev };
+  const rows = isMysqlEnabled() ? await computeReportFromDb(type, filters) : computeReport(type);
+  let comparison = null;
+  if (compare_prev) {
+    const previousFilters = buildPreviousPeriodFilters(filters);
+    if (previousFilters) {
+      const previousRows = isMysqlEnabled()
+        ? await computeReportFromDb(type, previousFilters)
+        : computeReport(type);
+      comparison = buildComparison(type, rows, previousRows, filters);
+    }
+  }
   const run = {
     id: reportRunIdSeq++,
     type,
     generated_at: nowIso(),
     generated_by: req.user.full_name,
     filter: `${from || "-"} to ${to || "-"}`,
-    compare_prev
+    compare_prev,
+    comparison
   };
   if (isMysqlEnabled()) {
     const result = await dbQuery(
@@ -2020,8 +2452,10 @@ app.get("/api/v1/reports/history", authRequired, async (_req, res) => {
 });
 
 app.post("/api/v1/reports/export", authRequired, async (req, res) => {
-  const { type = "sales-daily", format = "CSV" } = req.body || {};
-  const rows = isMysqlEnabled() ? await computeReportFromDb(String(type)) : computeReport(String(type));
+  const { type = "sales-daily", format = "CSV", from = "", to = "", compare_prev = false } = req.body || {};
+  const rows = isMysqlEnabled()
+    ? await computeReportFromDb(String(type), { from: String(from || ""), to: String(to || ""), compare_prev: Boolean(compare_prev) })
+    : computeReport(String(type));
   const normalizedFormat = String(format).toUpperCase();
   if (normalizedFormat === "CSV") {
     if (!rows.length) return res.json({ data: { content: "", filename: "report.csv", format: "CSV" } });
@@ -2068,16 +2502,17 @@ app.post("/api/v1/reports/schedule", authRequired, async (req, res) => {
     const type = String(body.type || "sales-daily");
     const schedule = String(body.schedule || "NONE");
     const toEmail = String(body.to_email || "");
+    const isActive = schedule !== "NONE";
     const existing = await dbQuery("SELECT id FROM report_schedules WHERE report_type = ? LIMIT 1", [type]);
     if (existing[0]) {
       await dbQuery(
-        "UPDATE report_schedules SET schedule_code = ?, to_email = ?, active = 1, updated_by = ? WHERE id = ?",
-        [schedule, toEmail, req.user.full_name, existing[0].id]
+        "UPDATE report_schedules SET schedule_code = ?, to_email = ?, active = ?, updated_by = ? WHERE id = ?",
+        [schedule, toEmail, isActive, req.user.full_name, existing[0].id]
       );
     } else {
       await dbQuery(
-        "INSERT INTO report_schedules (report_type, schedule_code, to_email, active, updated_by) VALUES (?, ?, ?, 1, ?)",
-        [type, schedule, toEmail, req.user.full_name]
+        "INSERT INTO report_schedules (report_type, schedule_code, to_email, active, updated_by) VALUES (?, ?, ?, ?, ?)",
+        [type, schedule, toEmail, isActive, req.user.full_name]
       );
     }
   }
@@ -2091,228 +2526,93 @@ app.post("/api/v1/reports/schedule", authRequired, async (req, res) => {
   });
 });
 
-// ===== AI forecast =====
-app.get("/api/v1/ai/model-performance", authRequired, async (_req, res) => {
-  if (isMysqlEnabled()) {
-    const rows = await dbQuery(
-      `SELECT category_name AS category, prophet_mape, arima_mape, prophet_mae, arima_mae, prophet_rmse, arima_rmse, selected_model AS selected
-       FROM ai_model_performance ORDER BY id ASC`
-    );
-    return res.json({ data: rows });
-  }
-  res.json({ data: aiModelPerformance });
-});
-
-app.get("/api/v1/ai/forecast/versions", authRequired, async (_req, res) => {
-  if (isMysqlEnabled()) {
-    const rows = await dbQuery(
-      `SELECT id, version_code AS version, product_id AS product, model_name AS model, generated_at, horizon_days AS horizon, mape
-       FROM ai_forecast_versions ORDER BY id DESC`
-    );
-    return res.json({ data: rows });
-  }
-  res.json({ data: aiForecastVersions });
-});
-
-app.get("/api/v1/ai/forecast/history", authRequired, async (_req, res) => {
-  if (isMysqlEnabled()) {
-    const rows = await dbQuery(
-      `SELECT id, created_at AS time, product_id AS product, horizon_days AS horizon, selected_model AS selected, mae, mape, rmse
-       FROM ai_forecast_runs ORDER BY id DESC`
-    );
-    return res.json({ data: rows });
-  }
-  res.json({ data: aiForecastHistory });
-});
-
-app.post("/api/v1/ai/forecast/run", authRequired, async (req, res) => {
-  const productId = toNumber(req.body?.product_id, 1);
-  const days = clamp(toNumber(req.body?.days, 30), 1, 180);
-  const lead = clamp(toNumber(req.body?.lead, 7), 1, 60);
-  if (isMysqlEnabled()) {
-    const productRows = await dbQuery("SELECT * FROM products WHERE id = ? LIMIT 1", [productId]);
-    const p = productRows[0] || (await dbQuery("SELECT * FROM products ORDER BY id LIMIT 1"))[0];
-    if (!p) return res.status(400).json({ message: "No products found" });
-    const avg = Number((Number(p.monthly_sales || 0) / 30).toFixed(2));
-    const total = Number((avg * days).toFixed(2));
-    const reorder = Number((avg * lead + 5).toFixed(2));
-    const ciLow = Number((total * 0.85).toFixed(2));
-    const ciHigh = Number((total * 1.15).toFixed(2));
-    const model = productId % 2 === 0 ? "ARIMA" : "PROPHET";
-    const mape = model === "ARIMA" ? 14.1 : 13.4;
-    const mae = model === "ARIMA" ? 3.5 : 3.1;
-    const rmse = model === "ARIMA" ? 5.0 : 4.8;
-    const runResult = await dbQuery(
-      `INSERT INTO ai_forecast_runs
-      (product_id, horizon_days, selected_model, mae, mape, rmse, avg_daily_demand, forecast_total, reorder_level, ci_low, ci_high)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [p.id, days, model, mae, mape, rmse, avg, total, reorder, ciLow, ciHigh]
-    );
-    await dbQuery(
-      `INSERT INTO ai_forecast_versions (version_code, product_id, model_name, horizon_days, mape, generated_at)
-       VALUES (?, ?, ?, ?, ?, NOW())`,
-      [`FCAST-${new Date().toISOString().slice(0, 10)}-${String(runResult.insertId).padStart(2, "0")}`, p.id, model, days, mape]
-    );
-    const reorderRecommendations = (await dbQuery("SELECT * FROM products")).map((x) => {
-      const avgDay = Number((Number(x.monthly_sales || 0) / 30).toFixed(2));
-      const reorderLevel = Number((avgDay * 7 + 5).toFixed(2));
-      return {
-        product: x.product_name,
-        avg_day: avgDay,
-        lead: 7,
-        reorder: reorderLevel,
-        stock: Number(x.quantity || 0),
-        suggest: Math.max(0, Math.ceil(reorderLevel - Number(x.quantity || 0))),
-        reorder_date: new Date(Date.now() + 3 * 24 * 3600 * 1000).toISOString().slice(0, 10),
-        urgency: Number(x.quantity || 0) <= Number(x.min_stock_level || 0) ? "HIGH" : "MEDIUM"
-      };
-    });
-    return res.status(201).json({
-      data: {
-        forecast: { avg, total, reorder, ci_low: ciLow, ci_high: ciHigh, model },
-        run: { id: runResult.insertId, time: nowIso(), product: p.id, horizon: days, selected: model, mae, mape, rmse },
-        reorder_recommendations: reorderRecommendations
-      }
-    });
-  }
-  const p = products.find((x) => x.id === productId) || products[0];
-  const avg = Number((p.monthly_sales / 30).toFixed(2));
-  const total = Number((avg * days).toFixed(2));
-  const reorder = Number((avg * lead + 5).toFixed(2));
-  const ciLow = Number((total * 0.85).toFixed(2));
-  const ciHigh = Number((total * 1.15).toFixed(2));
-  const model = productId % 2 === 0 ? "ARIMA" : "PROPHET";
-  const mape = model === "ARIMA" ? 14.1 : 13.4;
-  const run = {
-    id: Date.now(),
-    time: nowIso(),
-    product: productId,
-    horizon: days,
-    selected: model,
-    mae: model === "ARIMA" ? 3.5 : 3.1,
-    mape,
-    rmse: model === "ARIMA" ? 5.0 : 4.8
-  };
-  aiForecastHistory.unshift(run);
-  aiForecastVersions.unshift({
-    id: ++forecastVersionSeq,
-    version: `FCAST-${new Date().toISOString().slice(0, 10)}-${String(forecastVersionSeq).padStart(2, "0")}`,
-    product: productId,
-    model,
-    generated_at: new Date().toLocaleString(),
-    horizon: days,
-    mape
-  });
-  const reorderRecommendations = products.map((x) => {
-    const avgDay = Number((x.monthly_sales / 30).toFixed(2));
-    const reorderLevel = Number((avgDay * 7 + 5).toFixed(2));
-    return {
-      product: x.product_name,
-      avg_day: avgDay,
-      lead: 7,
-      reorder: reorderLevel,
-      stock: x.quantity,
-      suggest: Math.max(0, Math.ceil(reorderLevel - x.quantity)),
-      reorder_date: new Date(Date.now() + 3 * 24 * 3600 * 1000).toISOString().slice(0, 10),
-      urgency: x.quantity <= x.min_stock_level ? "HIGH" : "MEDIUM"
-    };
-  });
-  if (req.body?.alert_auto) {
-    notifications.unshift({
-      id: ++notificationIdSeq,
-      time: new Date().toLocaleString(),
-      type: "REORDER_AI",
-      priority: "MEDIUM",
-      product: p.product_name,
-      message: `AI recommends reorder quantity based on ${model}.`,
-      channel: "IN_APP",
-      delivery_status: "SENT",
-      read: false,
-      acknowledged: false,
-      snoozed_until: "-",
-      source_link: "/ai",
-      read_by: "-",
-      read_at: "-"
-    });
-  }
-  res.status(201).json({
-    data: {
-      forecast: { avg, total, reorder, ci_low: ciLow, ci_high: ciHigh, model },
-      run,
-      reorder_recommendations: reorderRecommendations
-    }
-  });
-});
-
-app.post("/api/v1/ai/forecast/bulk-run", authRequired, async (req, res) => {
-  if (isMysqlEnabled()) {
-    const rows = await dbQuery("SELECT id FROM products");
-    return res.json({
-      data: {
-        status: "COMPLETED",
-        progress: 100,
-        processed_products: rows.length
-      }
-    });
-  }
-  const alertAuto = Boolean(req.body?.alert_auto);
-  if (alertAuto) {
-    notifications.unshift({
-      id: ++notificationIdSeq,
-      time: new Date().toLocaleString(),
-      type: "REORDER_AI",
-      priority: "MEDIUM",
-      product: "Bulk Forecast",
-      message: "Bulk AI forecast completed and restock candidates generated.",
-      channel: "IN_APP",
-      delivery_status: "SENT",
-      read: false,
-      acknowledged: false,
-      snoozed_until: "-",
-      source_link: "/ai",
-      read_by: "-",
-      read_at: "-"
-    });
-  }
-  res.json({
-    data: {
-      status: "COMPLETED",
-      progress: 100,
-      processed_products: products.length
-    }
-  });
-});
-
 // ===== notifications =====
-app.get("/api/v1/notifications", authRequired, async (req, res) => {
-  const type = String(req.query.type || "ALL");
-  const status = String(req.query.status || "ALL");
+app.get("/api/v1/notifications/summary", authRequired, async (_req, res) => {
   if (isMysqlEnabled()) {
-    const rows = await dbQuery(
+    const [unreadRow] = await dbQuery(
+      "SELECT COUNT(*) AS unread_count FROM notifications WHERE is_read = 0"
+    );
+    const recent = await dbQuery(
       `SELECT n.id, DATE_FORMAT(n.notification_time, '%Y-%m-%d %H:%i') AS time,
               n.notification_type AS type, n.priority, COALESCE(p.product_name, '-') AS product, n.message, n.channel,
-              n.delivery_status, n.is_read AS read, n.acknowledged, COALESCE(DATE_FORMAT(n.snoozed_until, '%Y-%m-%d %H:%i'), '-') AS snoozed_until,
+              n.delivery_status, n.is_read AS is_read_flag, n.acknowledged, COALESCE(DATE_FORMAT(n.snoozed_until, '%Y-%m-%d %H:%i'), '-') AS snoozed_until,
               n.source_link, COALESCE(u.full_name, '-') AS read_by, COALESCE(DATE_FORMAT(n.read_at, '%Y-%m-%d %H:%i'), '-') AS read_at
        FROM notifications n
        LEFT JOIN products p ON p.id = n.product_id
        LEFT JOIN users u ON u.id = n.read_by
-       WHERE (? = 'ALL' OR n.notification_type = ?)
-         AND (
-           ? = 'ALL' OR
-           (? = 'READ' AND n.is_read = 1) OR
-           (? = 'UNREAD' AND n.is_read = 0) OR
-           (? = 'FAILED' AND n.delivery_status = 'FAILED')
-         )
-       ORDER BY n.id DESC`,
-      [type, type, status, status, status, status]
+       ORDER BY n.id DESC
+       LIMIT 5`
     );
-    return res.json({ data: rows.map((r) => ({ ...r, read: asBool(r.read), acknowledged: asBool(r.acknowledged) })) });
+
+    return res.json({
+      data: {
+        unread_count: toNumber(unreadRow?.unread_count, 0),
+        recent: recent.map((row) => {
+          const { is_read_flag, ...rest } = row;
+          return {
+            ...rest,
+            read: asBool(is_read_flag),
+            acknowledged: asBool(row.acknowledged)
+          };
+        })
+      }
+    });
+  }
+
+  return res.json({
+    data: {
+      unread_count: notifications.filter((item) => !item.read).length,
+      recent: notifications.slice(0, 5)
+    }
+  });
+});
+
+app.get("/api/v1/notifications", authRequired, async (req, res) => {
+  const type = String(req.query.type || "ALL");
+  const status = String(req.query.status || "ALL");
+  const limit = clamp(toNumber(req.query.limit, 0), 0, 100);
+  if (isMysqlEnabled()) {
+    let sql = `SELECT n.id, DATE_FORMAT(n.notification_time, '%Y-%m-%d %H:%i') AS time,
+                      n.notification_type AS type, n.priority, COALESCE(p.product_name, '-') AS product, n.message, n.channel,
+                      n.delivery_status, n.is_read AS is_read_flag, n.acknowledged, COALESCE(DATE_FORMAT(n.snoozed_until, '%Y-%m-%d %H:%i'), '-') AS snoozed_until,
+                      n.source_link, COALESCE(u.full_name, '-') AS read_by, COALESCE(DATE_FORMAT(n.read_at, '%Y-%m-%d %H:%i'), '-') AS read_at
+               FROM notifications n
+               LEFT JOIN products p ON p.id = n.product_id
+               LEFT JOIN users u ON u.id = n.read_by
+               WHERE (? = 'ALL' OR n.notification_type = ?)
+                 AND (
+                   ? = 'ALL' OR
+                   (? = 'READ' AND n.is_read = 1) OR
+                   (? = 'UNREAD' AND n.is_read = 0) OR
+                   (? = 'FAILED' AND n.delivery_status = 'FAILED')
+                 )
+               ORDER BY n.id DESC`;
+    const params = [type, type, status, status, status, status];
+    if (limit > 0) {
+      sql += " LIMIT ?";
+      params.push(limit);
+    }
+    const rows = await dbQuery(
+      sql,
+      params
+    );
+    return res.json({
+      data: rows.map((row) => {
+        const { is_read_flag, ...rest } = row;
+        return {
+          ...rest,
+          read: asBool(is_read_flag),
+          acknowledged: asBool(row.acknowledged)
+        };
+      })
+    });
   }
   let rows = [...notifications];
   if (type !== "ALL") rows = rows.filter((n) => n.type === type);
   if (status === "READ") rows = rows.filter((n) => n.read);
   if (status === "UNREAD") rows = rows.filter((n) => !n.read);
   if (status === "FAILED") rows = rows.filter((n) => n.delivery_status === "FAILED");
+  if (limit > 0) rows = rows.slice(0, limit);
   res.json({ data: rows });
 });
 
@@ -2530,7 +2830,7 @@ app.post("/api/v1/users", authRequired, async (req, res) => {
       `INSERT INTO users
       (username, email, password_hash, full_name, role_id, status, locked, force_reset, created_by, updated_by)
       VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?)`,
-      [username, email, password, full_name, roleRow.id, String(body.status || "ACTIVE"), body.force_reset ? 1 : 0, req.user.full_name, req.user.full_name]
+      [username, email, hashPassword(password), full_name, roleRow.id, String(body.status || "ACTIVE"), body.force_reset ? 1 : 0, req.user.full_name, req.user.full_name]
     );
     const userId = result.insertId;
     for (const perm of roleTemplates[role] || []) {
@@ -2555,7 +2855,7 @@ app.post("/api/v1/users", authRequired, async (req, res) => {
     id: ++userIdSeq,
     username,
     email,
-    password,
+    password_hash: hashPassword(password),
     full_name,
     role,
     role_name: role,
@@ -2596,7 +2896,8 @@ app.put("/api/v1/users/:id", authRequired, async (req, res) => {
     await dbQuery(
       `UPDATE users
        SET username = COALESCE(?, username), email = COALESCE(?, email), full_name = COALESCE(?, full_name),
-           role_id = ?, status = COALESCE(?, status), force_reset = COALESCE(?, force_reset), updated_by = ?
+           role_id = ?, status = COALESCE(?, status), force_reset = COALESCE(?, force_reset),
+           password_hash = COALESCE(?, password_hash), updated_by = ?
        WHERE id = ?`,
       [
         body.username ?? null,
@@ -2605,6 +2906,7 @@ app.put("/api/v1/users/:id", authRequired, async (req, res) => {
         roleId,
         body.status ?? null,
         body.force_reset !== undefined ? (body.force_reset ? 1 : 0) : null,
+        body.password ? hashPassword(String(body.password)) : null,
         req.user.full_name,
         id
       ]
@@ -2632,9 +2934,11 @@ app.put("/api/v1/users/:id", authRequired, async (req, res) => {
   users[idx] = {
     ...users[idx],
     ...body,
+    ...(body.password ? { password_hash: hashPassword(String(body.password)) } : {}),
     updated_by: req.user.full_name,
     updated_at: nowIso()
   };
+  delete users[idx].password;
   appendUserActivity("USER_UPDATED", users[idx].username);
   res.json({ data: users[idx] });
 });
@@ -2804,7 +3108,8 @@ app.get("/api/v1/email-settings", authRequired, async (_req, res) => {
         smtp_host: row.smtp_host,
         smtp_port: Number(row.smtp_port || 0),
         smtp_user: row.smtp_user,
-        smtp_password: row.smtp_password,
+        smtp_password: "",
+        has_smtp_password: Boolean(row.smtp_password),
         sender_name: row.sender_name,
         sender_email: row.sender_email,
         use_tls: asBool(row.use_tls) ? 1 : 0,
@@ -2815,7 +3120,13 @@ app.get("/api/v1/email-settings", authRequired, async (_req, res) => {
       }
     });
   }
-  res.json({ data: emailSettings });
+  res.json({
+    data: {
+      ...emailSettings,
+      smtp_password: "",
+      has_smtp_password: Boolean(emailSettings.smtp_password)
+    }
+  });
 });
 
 app.put("/api/v1/email-settings", authRequired, async (req, res) => {
@@ -2823,6 +3134,8 @@ app.put("/api/v1/email-settings", authRequired, async (req, res) => {
     const body = req.body || {};
     const rows = await dbQuery("SELECT id FROM email_settings ORDER BY id LIMIT 1");
     let settingId = rows[0]?.id;
+    const nextPassword = String(body.smtp_password || "");
+    const encryptedPassword = nextPassword ? encryptSecret(nextPassword, env.smtpEncryptionKey) : "";
     if (!settingId) {
       const ins = await dbQuery(
         `INSERT INTO email_settings
@@ -2832,7 +3145,7 @@ app.put("/api/v1/email-settings", authRequired, async (req, res) => {
           String(body.smtp_host || ""),
           toNumber(body.smtp_port, 587),
           String(body.smtp_user || ""),
-          String(body.smtp_password || ""),
+          encryptedPassword,
           String(body.sender_name || "AI Inventory"),
           String(body.sender_email || ""),
           body.use_tls ? 1 : 0,
@@ -2843,6 +3156,7 @@ app.put("/api/v1/email-settings", authRequired, async (req, res) => {
       );
       settingId = ins.insertId;
     } else {
+      const current = (await dbQuery("SELECT smtp_password FROM email_settings WHERE id = ?", [settingId]))[0];
       await dbQuery(
         `UPDATE email_settings
          SET smtp_host = ?, smtp_port = ?, smtp_user = ?, smtp_password = ?, sender_name = ?, sender_email = ?, use_tls = ?,
@@ -2852,7 +3166,7 @@ app.put("/api/v1/email-settings", authRequired, async (req, res) => {
           String(body.smtp_host || ""),
           toNumber(body.smtp_port, 587),
           String(body.smtp_user || ""),
-          String(body.smtp_password || ""),
+          encryptedPassword || String(current?.smtp_password || ""),
           String(body.sender_name || "AI Inventory"),
           String(body.sender_email || ""),
           body.use_tls ? 1 : 0,
@@ -2869,13 +3183,30 @@ app.put("/api/v1/email-settings", authRequired, async (req, res) => {
       await dbQuery("INSERT INTO email_recipients (email_setting_id, recipient_email) VALUES (?, ?)", [settingId, e]);
     }
     const row = (await dbQuery("SELECT * FROM email_settings WHERE id = ?", [settingId]))[0];
-    return res.json({ data: { ...row, alert_recipients: recipients } });
+    return res.json({
+      data: {
+        ...row,
+        smtp_password: "",
+        has_smtp_password: Boolean(row?.smtp_password),
+        alert_recipients: recipients
+      }
+    });
   }
   const body = req.body || {};
-  Object.assign(emailSettings, body);
+  const nextPassword = String(body.smtp_password || "");
+  Object.assign(emailSettings, {
+    ...body,
+    smtp_password: nextPassword ? encryptSecret(nextPassword, env.smtpEncryptionKey) : emailSettings.smtp_password
+  });
   if (!Array.isArray(emailSettings.alert_recipients)) emailSettings.alert_recipients = [""];
   emailSettings.alert_recipients = emailSettings.alert_recipients.slice(0, 5);
-  res.json({ data: emailSettings });
+  res.json({
+    data: {
+      ...emailSettings,
+      smtp_password: "",
+      has_smtp_password: Boolean(emailSettings.smtp_password)
+    }
+  });
 });
 
 app.post("/api/v1/email-settings/test", authRequired, async (req, res) => {
@@ -2885,26 +3216,30 @@ app.post("/api/v1/email-settings/test", authRequired, async (req, res) => {
         .split(",")
         .map((x) => x.trim())
         .filter(Boolean);
-  if (isMysqlEnabled() && !to.length) {
-    const row = (await dbQuery("SELECT id FROM email_settings ORDER BY id LIMIT 1"))[0];
-    if (row) {
-      const recipients = await dbQuery("SELECT recipient_email FROM email_recipients WHERE email_setting_id = ?", [row.id]);
-      return res.json({
-        data: {
-          ok: true,
-          to: recipients.map((r) => r.recipient_email),
-          sent_at: nowIso()
-        }
-      });
-    }
+  try {
+    const emailResult = await notificationService.sendEmail({
+      recipients: to,
+      subject: "AI Inventory Test Email",
+      text: `This is a test email from AI Inventory.\n\nSent at: ${nowIso()}`,
+      category: "TEST"
+    });
+    const chosenRecipients = Array.isArray(emailResult.to) && emailResult.to.length
+      ? emailResult.to
+      : to.length
+        ? to
+        : emailSettings.alert_recipients.filter(Boolean);
+    return res.json({
+      data: {
+        ok: Boolean(emailResult.ok),
+        skipped: Boolean(emailResult.skipped),
+        reason: emailResult.reason || "",
+        to: chosenRecipients,
+        sent_at: nowIso()
+      }
+    });
+  } catch (err) {
+    return res.status(400).json({ message: err.message });
   }
-  res.json({
-    data: {
-      ok: true,
-      to: to.length ? to : emailSettings.alert_recipients.filter(Boolean),
-      sent_at: nowIso()
-    }
-  });
 });
 
 app.get("/", async (req, res) => {
@@ -2947,13 +3282,63 @@ app.use("/api/v1", authRequired, (_req, res) => {
   res.status(404).json({ message: "Endpoint not found" });
 });
 
-app.use((err, _req, res, _next) => {
-  // eslint-disable-next-line no-console
-  console.error(err);
-  res.status(500).json({ message: "Internal server error" });
-});
+app.use(notFoundHandler);
+app.use(errorHandler);
 
-app.listen(PORT, "127.0.0.1", () => {
+async function startServer() {
+  let startupDatabaseError = null;
+  try {
+    await pingMysql();
+  } catch (err) {
+    startupDatabaseError = err;
+    // eslint-disable-next-line no-console
+    console.warn(`Database startup check failed: ${describeDatabaseConnectionError(err)}`);
+  }
+
+  const server = app.listen(PORT, env.host, () => {
+    schedulerService.start();
+    // eslint-disable-next-line no-console
+    console.log(`Backend running at http://${env.host}:${PORT}`);
+    if (startupDatabaseError) {
+      // eslint-disable-next-line no-console
+      console.warn("Backend started in degraded mode. Database-backed routes will fail until PostgreSQL is reachable.");
+    }
+  });
+
+  let shuttingDown = false;
+  async function shutdown(signal) {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    // eslint-disable-next-line no-console
+    console.log(`Received ${signal}, shutting down gracefully...`);
+    server.close(async () => {
+      try {
+        await closeMysqlPool();
+      } finally {
+        process.exit(0);
+      }
+    });
+    setTimeout(() => process.exit(1), 10000).unref();
+  }
+
+  process.on("SIGINT", () => shutdown("SIGINT"));
+  process.on("SIGTERM", () => shutdown("SIGTERM"));
+  process.on("unhandledRejection", (reason) => {
+    // eslint-disable-next-line no-console
+    console.error("Unhandled promise rejection:", reason);
+    if (env.isProduction) shutdown("unhandledRejection");
+  });
+  process.on("uncaughtException", (error) => {
+    // eslint-disable-next-line no-console
+    console.error("Uncaught exception:", error);
+    shutdown("uncaughtException");
+  });
+}
+
+startServer().catch((err) => {
   // eslint-disable-next-line no-console
-  console.log(`Backend running at http://127.0.0.1:${PORT}`);
+  console.error("Failed to start backend:", err);
+  // eslint-disable-next-line no-console
+  console.error(describeDatabaseConnectionError(err));
+  process.exit(1);
 });

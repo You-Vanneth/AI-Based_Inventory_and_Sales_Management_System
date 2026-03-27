@@ -281,6 +281,7 @@ export default function NotificationsPage() {
         <h3 className="card-title">{t("Alert Queue")}</h3>
         <DataTable
           className="notifications-table"
+          wrapCells
           columns={[t("Select"), t("Time"), t("Alert"), t("Delivery"), t("Audit"), t("Actions")]}
           rows={filtered.map((x) => [
             <input key={`s-${x.id}`} type="checkbox" checked={selectedIds.includes(x.id)} onChange={() => toggleSelect(x.id)} />,
@@ -316,8 +317,7 @@ export default function NotificationsPage() {
         />
       </section>
 
-      <section className="grid grid-2">
-        <article className="card">
+      <section className="card">
           <h3 className="card-title">{t("Notification Preferences")}</h3>
           <div className="grid">
             <div>
@@ -387,10 +387,10 @@ export default function NotificationsPage() {
               {t("Save Preferences")}
             </button>
           </div>
-        </article>
+      </section>
 
-        <article className="card">
-          <h3 className="card-title">{t("Rule Configuration")}</h3>
+      <section className="card">
+        <h3 className="card-title">{t("Rule Configuration")}</h3>
         <DataTable
           className="notifications-rules-table"
           columns={[t("Rule"), t("Severity"), t("Channel"), t("Active"), t("Action")]}
@@ -403,7 +403,6 @@ export default function NotificationsPage() {
             ])}
             emptyText={t("No rules")}
           />
-        </article>
       </section>
 
       {msg ? <div className="msg ok">{msg}</div> : null}
